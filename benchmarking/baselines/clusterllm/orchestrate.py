@@ -1,24 +1,30 @@
 """Phase orchestrator for the ClusterLLM baseline.
 
-Drives the vendored author code (phases 0/1/2.5/3/4) via subprocess, and our
-own ``triplet_judge`` (phase 2) in-process. Each phase is idempotent and
-caches its artifact under ``data/clusterllm/<dataset>/``:
-
-| Phase | Output                              | Runner                     |
-|-------|-------------------------------------|----------------------------|
-| 0     | base_embeds.hdf5                    | vendored get_embedding.py  |
-| 1     | triplets.json                       | vendored triplet_sampling  |
-| 2     | triplets_judged.jsonl               | this repo's triplet_judge  |
-| 2.5   | train_triplets.json                 | vendored convert_triplet   |
-| 3     | checkpoints/instructor-large/...    | vendored finetune.py (GPU) |
-| 4     | final_embeds.hdf5 + results/        | vendored get_embedding.py  |
+| Phase | Output                              | Runner                                |
+|-------|-------------------------------------|---------------------------------------|
+| 0     | base_embeds.hdf5                    | ``embed_base`` (SentenceTransformer)  |
+| 1     | triplets.json                       | vendored triplet_sampling.py          |
+| 2     | triplets_judged.jsonl               | this repo's triplet_judge             |
+| 2.5   | train_triplets.json                 | vendored convert_triplet.py           |
+| 3     | checkpoints/instructor-large/...    | vendored finetune.py (GPU)            |
+| 4     | final_embeds.hdf5 + results/        | ``embed_base`` (with finetuned ckpt)  |
 
 Tonight's overnight call site is phase 2 only. Phases 0+1 prepare its input;
 phases 3+4 are tomorrow on FASRC GPU.
+
+Encoder note (phase 0/4): we use ``SentenceTransformer("hkunlp/instructor-large")``
+with the modern ``prompt=`` argument rather than subprocessing into the
+vendored ``get_embedding.py``. The vendored encoder targets sentence-
+transformers 2.2 internals and breaks against current ST 5.x; rather than
+patch the science-adjacent code we drive the same model weights through
+the ST 5.x prompt API, with the per-dataset Instructor instructions from
+``instructor_prompts.json`` (copied verbatim from the authors' phase-3
+prompts.json). Documented in SPEC §5.6.3.
 """
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess
 import sys
@@ -32,13 +38,14 @@ from benchmarking.paths import DATA
 VENDORED_PERSPECTIVE = Path(__file__).resolve().parent / "_vendored" / "perspective"
 TRIPLET_SAMPLING_PY = VENDORED_PERSPECTIVE / "1_predict_triplet" / "triplet_sampling.py"
 FINETUNE_DIR = VENDORED_PERSPECTIVE / "2_finetune"
-GET_EMBEDDING_PY = FINETUNE_DIR / "get_embedding.py"
 CONVERT_TRIPLET_PY = FINETUNE_DIR / "convert_triplet.py"
 FINETUNE_PY = FINETUNE_DIR / "finetune.py"
 
-CLUSTERLLM_ROOT = DATA / "clusterllm"
+INSTRUCTOR_PROMPTS_PATH = Path(__file__).resolve().parent / "instructor_prompts.json"
 
+CLUSTERLLM_ROOT = DATA / "clusterllm"
 INSTRUCTOR_MODEL = "hkunlp/instructor-large"
+ENCODE_BATCH_SIZE = 32
 
 
 _VENDORED_WRAPPER = "benchmarking.baselines.clusterllm._run_vendored"
@@ -55,27 +62,80 @@ def _run_vendored(script: Path, args: list[str], *, cwd: Path) -> None:
         )
 
 
-def embed_base(dataset_name: str, *, overwrite: bool = False) -> Path:
-    """Phase 0: Instructor-large embeddings of all docs."""
+def _load_instructor_prompt(dataset_name: str) -> str:
+    prompts = json.loads(INSTRUCTOR_PROMPTS_PATH.read_text(encoding="utf-8"))
+    if dataset_name not in prompts:
+        raise KeyError(
+            f"No Instructor prompt for dataset {dataset_name!r} in "
+            f"{INSTRUCTOR_PROMPTS_PATH}. Available: "
+            f"{[k for k in prompts if not k.startswith('_')]}"
+        )
+    return prompts[dataset_name]
+
+
+def embed_base(
+    dataset_name: str,
+    *,
+    overwrite: bool = False,
+    checkpoint_dir: Path | None = None,
+) -> Path:
+    """Phase 0 (or phase 4 with ``checkpoint_dir``): Instructor-large embeddings.
+
+    Uses ``SentenceTransformer`` with the modern ``prompt=`` API instead of the
+    vendored Instructor wrapper — see module docstring for the why. Output
+    layout matches what the vendored ``triplet_sampling.py`` expects:
+    HDF5 with a single dataset named ``embeds`` of shape ``(N, D)``.
+    """
+    import h5py
+    import numpy as np
+    from sentence_transformers import SentenceTransformer
+
     adapted = adapt(dataset_name)
     out_dir = CLUSTERLLM_ROOT / dataset_name
     out_dir.mkdir(parents=True, exist_ok=True)
-    result_file = out_dir / "base_embeds.hdf5"
+    result_file = (
+        out_dir / "final_embeds.hdf5" if checkpoint_dir is not None else out_dir / "base_embeds.hdf5"
+    )
 
     if result_file.exists() and not overwrite:
-        print(f"[clusterllm/{dataset_name}/phase=embed] cache hit -> {result_file}", flush=True)
+        print(
+            f"[clusterllm/{dataset_name}/phase=embed] cache hit -> {result_file}",
+            flush=True,
+        )
         return result_file
 
-    print(f"[clusterllm/{dataset_name}/phase=embed] encoding {adapted.n_docs} docs with {INSTRUCTOR_MODEL}", flush=True)
-    args = [
-        "--model_name", INSTRUCTOR_MODEL,
-        "--task_name", dataset_name,
-        "--data_path", str(adapted.jsonl_path),
-        "--result_file", str(result_file),
-        "--prompt", INSTRUCTOR_MODEL,
-        "--scale", "large",
-    ]
-    _run_vendored(GET_EMBEDDING_PY, args, cwd=FINETUNE_DIR)
+    prompt = _load_instructor_prompt(dataset_name)
+    print(
+        f"[clusterllm/{dataset_name}/phase=embed] encoding {adapted.n_docs} docs "
+        f"with {INSTRUCTOR_MODEL} | prompt={prompt!r}"
+        + (f" | checkpoint={checkpoint_dir}" if checkpoint_dir is not None else ""),
+        flush=True,
+    )
+
+    texts = [json.loads(line)["input"] for line in adapted.jsonl_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    if len(texts) != adapted.n_docs:
+        raise RuntimeError(
+            f"adapter said {adapted.n_docs} docs but loaded {len(texts)} from {adapted.jsonl_path}"
+        )
+
+    model_id = str(checkpoint_dir) if checkpoint_dir is not None else INSTRUCTOR_MODEL
+    model = SentenceTransformer(model_id)
+    embeddings = model.encode(
+        texts,
+        prompt=prompt,
+        batch_size=ENCODE_BATCH_SIZE,
+        show_progress_bar=True,
+        convert_to_numpy=True,
+        normalize_embeddings=False,
+    )
+    embeddings = np.asarray(embeddings, dtype=np.float32)
+
+    with h5py.File(result_file, "w") as f:
+        f.create_dataset("embeds", data=embeddings)
+    print(
+        f"[clusterllm/{dataset_name}/phase=embed] wrote {embeddings.shape} -> {result_file}",
+        flush=True,
+    )
     return result_file
 
 

@@ -1,0 +1,10 @@
+{
+    "_comment": "Per-dataset Instructor instructions for phase 0/4 encoding (and phase 3 fine-tuning when implemented). Strings copied from the ClusterLLM authors' 2_finetune/prompts.json where their dataset keys match ours; massive_domain is added parallel to their massive_intent entry. See SPEC §5.6.3.",
+    "banking77":          "Represent the bank purpose for retrieval: ",
+    "clinc150":           "Represent the sentence for retrieving the purpose: ",
+    "massive_intent":     "Represent the sentence for retrieving the purpose: ",
+    "massive_domain":     "Represent the sentence for retrieving the domain: ",
+    "goemotions":         "Represent an emotion sentence for retrieval: ",
+    "twenty_newsgroups":  "Represent the news comment for retrieval: ",
+    "stackexchange":      "Represent the question for retrieval: "
+}

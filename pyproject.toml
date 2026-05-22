@@ -14,17 +14,7 @@ dependencies = [
     "scikit-learn>=1.4",
     "truststore>=0.10 ; sys_platform == 'win32'",
     "gdown>=5.2",
-    # Sentence-transformers pinned to 2.2.0 — the exact version the ClusterLLM
-    # authors developed against (their requirements.txt says >=2.2.0). The
-    # vendored Instructor encoder under
-    # benchmarking/baselines/clusterllm/_vendored/ overrides several internal
-    # methods (_load_sbert_model, encode) against the ST 2.2.0 contract.
-    # Bumping to 2.7+ breaks those overrides via parent-class signature
-    # changes; bumping to 5.x breaks them more deeply via the new
-    # InputFormatter/Modality pipeline. Pin here keeps the vendored code
-    # byte-identical to upstream (apart from non-science fixes documented in
-    # _vendored/CHANGES.md).
-    "sentence-transformers==2.2.0",
+    "sentence-transformers>=5.0",
     "bertopic>=0.16",
     "openai>=1.40",
     "tiktoken>=0.7",
