@@ -19,7 +19,21 @@ dependencies = [
     "openai>=1.40",
     "tiktoken>=0.7",
     "h5py>=3.10",
+    # Torch pinned to a cu128 build. FASRC GPU nodes (driver 575.x) cap at
+    # CUDA 12.9, so the default cu13x wheels silently fall back to CPU.
+    # cu128 wheels also work on Windows/local with newer drivers (forward
+    # compat), so one resolution covers both platforms. See
+    # ~/.claude/skills/fasrc/gotchas.md "torch CUDA wheel vs FASRC driver".
+    "torch==2.11.0",
 ]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
 
 [build-system]
 requires = ["hatchling"]
