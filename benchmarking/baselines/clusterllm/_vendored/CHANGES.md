@@ -40,13 +40,6 @@ Replace `assert not os.path.exists(output_path)` (line 58) with an unlink
 any second call; we want to be able to re-derive train triplets from an
 updated judgments file without manually deleting outputs.
 
-### `InstructorEmbedding/instructor.py`
-
-Widened ``_load_sbert_model`` signature to accept ``*args, **kwargs``. ST
-2.7 passes extra kwargs (``token``, ``cache_folder``, ``local_files_only``,
-…) that didn't exist when the vendored override was written against ST
-2.2. We accept and ignore them — the override only uses ``model_path``.
-
 ### `clustering_utils/evaluator.py`
 
 Extended the ``DEFINITIONS['hkunlp/instructor-large']`` dict with four
