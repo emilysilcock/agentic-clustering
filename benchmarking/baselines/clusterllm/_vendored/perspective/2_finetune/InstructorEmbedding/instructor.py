@@ -438,10 +438,14 @@ class INSTRUCTOR(SentenceTransformer):
 
         return sentence_features, labels
 
-    def _load_sbert_model(self, model_path):
+    def _load_sbert_model(self, model_path, *args, **kwargs):
         """
         Loads a full sentence-transformers model
         """
+        # PATCH (agentic-clustering): swallow extra kwargs (token, cache_folder,
+        # local_files_only, ...) added by newer sentence-transformers versions.
+        # The vendored override targets the 2.2.x signature.
+        _ = args, kwargs
         # Check if the config_sentence_transformers.json file exists (exists since v2 of the framework)
         config_sentence_transformers_json_path = os.path.join(model_path, 'config_sentence_transformers.json')
         if os.path.exists(config_sentence_transformers_json_path):
