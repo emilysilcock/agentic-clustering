@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "SubagentStop": [
+      {
+        "matcher": "proposer|synthesizer|auditor|investigator|critic",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-$(cat .claude/clustering/.plugin_root 2>/dev/null)}; uv run ${PLUGIN_ROOT}/skills/corpus-tools/scripts/validate.py || exit 2"
+          },
+          {
+            "type": "command",
+            "command": "PLUGIN_ROOT=${CLAUDE_PLUGIN_ROOT:-$(cat .claude/clustering/.plugin_root 2>/dev/null)}; uv run ${PLUGIN_ROOT}/skills/corpus-tools/scripts/state.py summarize 2>/dev/null && echo 'summary.md updated'"
+          }
+        ]
+      }
+    ]
+  }
+}

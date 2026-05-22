@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# uv
+.uv/
+
+# Plugin runtime workspace (created when the plugin is exercised on data inside this repo)
+.claude/clustering/
+.claude/settings.local.json
+
+# Data — downloaded from HuggingFace, not versioned
+/data/
+
+# Results — regenerable, not versioned (override with !file if a final figure should be tracked)
+/results/
+
+# Secrets — API keys loaded into os.environ by benchmarking/secrets.py
+secrets.json
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Paper draft + spec — kept local until publication clears the anonymity window.
+# Flip by removing the next line once the paper is public.
+/paper/
+
+# (Build artefacts also listed in case /paper/ is un-gitignored later)
+paper/*.aux
+paper/*.log
+paper/*.out
+paper/*.bbl
+paper/*.blg
+paper/*.synctex.gz

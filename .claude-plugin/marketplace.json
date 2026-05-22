@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-marketplace.json",
+  "name": "agentic-clustering-marketplace",
+  "description": "Marketplace listing for the agentic-clustering plugin",
+  "owner": {
+    "name": "Emily Silcock",
+    "email": "emilysilcock@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "agentic-clustering",
+      "source": "./",
+      "version": "0.1.0",
+      "description": "Iterative agentic discovery of natural clusters in text corpora using a proposer/synthesizer/auditor/investigator/critic loop",
+      "author": [
+        {
+          "name": "Emily Silcock",
+          "email": "emilysilcock@gmail.com"
+        },
+        {
+          "name": "Simon Löwe",
+          "email": "loewe.sim@gmail.com"
+        }
+      ],
+      "repository": "https://github.com/TBD/agentic-clustering",
+      "license": "MIT",
+      "keywords": ["clustering", "nlp", "text-analysis", "agentic"]
+    }
+  ]
+}

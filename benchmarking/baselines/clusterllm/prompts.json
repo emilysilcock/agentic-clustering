@@ -1,0 +1,9 @@
+{
+    "banking77": "Select the banking customer utterance that better corresponds with the Query in terms of intent.\n\n",
+    "clinc150": "Select the customer utterance that better corresponds with the Query in terms of intent.\n\n",
+    "massive_intent": "Select the user utterance that better corresponds with the Query in terms of intent.\n\n",
+    "massive_domain": "Select the user utterance that better corresponds with the Query in terms of domain.\n\n",
+    "goemotions": "Select the sentence that better corresponds with the Query in terms of emotion expressed.\n\n",
+    "twenty_newsgroups": "Select the newsgroup posting that better corresponds with the Query in terms of topic.\n\n",
+    "stackexchange": "Select the StackExchange question that better corresponds with the Query in terms of topic.\n\n"
+}
