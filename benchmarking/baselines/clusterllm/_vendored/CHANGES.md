@@ -40,6 +40,14 @@ Replace `assert not os.path.exists(output_path)` (line 58) with an unlink
 any second call; we want to be able to re-derive train triplets from an
 updated judgments file without manually deleting outputs.
 
+### `InstructorEmbedding/instructor.py`
+
+Renamed two call sites from ``self._text_length(...)`` to
+``self._input_length(...)`` (lines 527 and 530). ``sentence-transformers``
+5.x renamed the inherited method; the vendored code targets the 2.x API.
+Behavior is unchanged — both methods return the token length for the
+sentence-sorting heuristic.
+
 ### `clustering_utils/evaluator.py`
 
 Extended the ``DEFINITIONS['hkunlp/instructor-large']`` dict with four
