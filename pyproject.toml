@@ -14,7 +14,15 @@ dependencies = [
     "scikit-learn>=1.4",
     "truststore>=0.10 ; sys_platform == 'win32'",
     "gdown>=5.2",
-    "sentence-transformers>=2.7",
+    # Sentence-transformers pinned to the 2.x line. The vendored Instructor
+    # encoder (zhang-yu-wei/ClusterLLM 2023) relies on the legacy encode/
+    # tokenize API that accepted list-of-list inputs ([prompt, text, 0]) and
+    # on the internal ``_text_length`` method. ST 5.x rewrote both via the
+    # InputFormatter/Modality infrastructure and renamed ``_text_length`` to
+    # ``_input_length``. Pin until we either upgrade the vendored Instructor
+    # to the ST 5.x API or migrate to the official InstructorEmbedding PyPI
+    # package for phase 0+4 (phase 3 still needs the vendored compute_loss).
+    "sentence-transformers>=2.7,<3.0",
     "bertopic>=0.16",
     "openai>=1.40",
     "tiktoken>=0.7",

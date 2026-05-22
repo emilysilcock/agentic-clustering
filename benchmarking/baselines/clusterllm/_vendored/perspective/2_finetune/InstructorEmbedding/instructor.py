@@ -524,10 +524,10 @@ class INSTRUCTOR(SentenceTransformer):
         if isinstance(sentences[0],list):
             lengths = []
             for sen in sentences:
-                lengths.append(-self._input_length(sen[1]))
+                lengths.append(-self._text_length(sen[1]))
             length_sorted_idx = np.argsort(lengths)
         else:
-            length_sorted_idx = np.argsort([-self._input_length(sen) for sen in sentences])
+            length_sorted_idx = np.argsort([-self._text_length(sen) for sen in sentences])
         sentences_sorted = [sentences[idx] for idx in length_sorted_idx]
 
         for start_index in trange(0, len(sentences), batch_size, desc="Batches", disable=not show_progress_bar):
