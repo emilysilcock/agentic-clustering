@@ -16,6 +16,17 @@
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$PROJECT_ROOT" || return 1
 
+# Fast path: if .venv already exists and the caller didn't request a forced
+# resync, just activate and return. Without this every array task races on
+# ~/.local/share/uv/python/.lock and most fail with "No locks available"
+# (gotchas.md §SLURM). Caller can force a fresh sync via FORCE_UV_SYNC=1.
+if [ -x "$PROJECT_ROOT/.venv/bin/python" ] && [ "${FORCE_UV_SYNC:-0}" != "1" ]; then
+    # shellcheck disable=SC1091
+    source "$PROJECT_ROOT/.venv/bin/activate"
+    echo "[setup_env] fast path: activated existing .venv ($(python --version))"
+    return 0
+fi
+
 # Read python version from pyproject.toml's requires-python (defaults to 3.11).
 # Override by exporting PYTHON_VERSION before sourcing.
 PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
