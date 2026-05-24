@@ -31,7 +31,10 @@ import sys
 from pathlib import Path
 
 from benchmarking.baselines.clusterllm.dataset_adapter import adapt
-from benchmarking.baselines.clusterllm.triplet_judge import judge_triplets
+from benchmarking.baselines.clusterllm.triplet_judge import (
+    judge_triplets,
+    judge_triplets_openai_batch,
+)
 from benchmarking.llm_clients.claude_code import DEFAULT_MODEL
 from benchmarking.paths import DATA
 
@@ -196,24 +199,231 @@ def judge(
     dataset_name: str,
     *,
     concurrency: int = 4,
-    model: str = DEFAULT_MODEL,
+    model: str | None = None,
+    backend: str = "openai_batch",
 ) -> Path:
-    """Phase 2: judge each triplet via Claude Code (Opus 4.7).
+    """Phase 2: judge each triplet via the cheap-tier LLM.
+
+    Default ``backend="openai_batch"`` routes through ``gpt-5-mini`` on the
+    OpenAI Batch API, per SPEC §5.6.3 (>1,000-text rule). ``backend="claude"``
+    is the legacy Opus path, kept for the archived ``triplets_judged.opus.jsonl``
+    records and not used for new runs.
 
     Resumable — appends to ``triplets_judged.jsonl`` and skips records the
-    file already contains. Usage limits are absorbed inside ``call_claude``.
+    file already contains.
     """
     triplets_path = CLUSTERLLM_ROOT / dataset_name / "triplets.json"
     if not triplets_path.exists():
         raise FileNotFoundError(f"phase 2 needs phase 1 output: {triplets_path}")
 
     out_path = CLUSTERLLM_ROOT / dataset_name / "triplets_judged.jsonl"
-    summary = judge_triplets(
-        triplets_path=triplets_path,
-        out_path=out_path,
-        dataset=dataset_name,
-        model=model,
-        concurrency=concurrency,
-    )
+    if backend == "openai_batch":
+        summary = judge_triplets_openai_batch(
+            triplets_path=triplets_path,
+            out_path=out_path,
+            dataset=dataset_name,
+            model=model or "gpt-5-mini",
+        )
+    elif backend == "claude":
+        summary = judge_triplets(
+            triplets_path=triplets_path,
+            out_path=out_path,
+            dataset=dataset_name,
+            model=model or DEFAULT_MODEL,
+            concurrency=concurrency,
+        )
+    else:
+        raise ValueError(f"unknown judging backend: {backend!r}")
+
     print(f"[clusterllm/{dataset_name}/phase=judge] -> {out_path} | {summary}", flush=True)
     return out_path
+
+
+def convert_triplets(dataset_name: str, *, overwrite: bool = False) -> Path:
+    """Phase 2.5: turn judged triplets into (anchor, pos, neg) training rows.
+
+    Inline equivalent of vendored ``convert_triplet.py``. We do it in-process
+    rather than calling the vendored script for two reasons: (a) the vendored
+    script hardcodes a path to its own ``prompts.json`` whose dataset keys
+    don't match ours; (b) it's 30 lines of pure data shuffling — no point in
+    a subprocess.
+
+    Output JSON shape matches upstream exactly so ``finetune.py`` can consume
+    either source identically. Each row is
+    ``{'query': [prompt, anchor], 'pos': [prompt, pos], 'neg': [prompt, neg], 'task_name': dataset, ...}``.
+    Records with ambiguous predictions (``len(prediction) != 1``) are skipped,
+    matching upstream's behaviour.
+    """
+    judged_path = CLUSTERLLM_ROOT / dataset_name / "triplets_judged.jsonl"
+    if not judged_path.exists():
+        raise FileNotFoundError(f"phase 2.5 needs phase 2 output: {judged_path}")
+
+    out_path = CLUSTERLLM_ROOT / dataset_name / "train_triplets.json"
+    if out_path.exists() and not overwrite:
+        print(f"[clusterllm/{dataset_name}/phase=convert] cache hit -> {out_path}", flush=True)
+        return out_path
+
+    adapted = adapt(dataset_name)
+    with adapted.jsonl_path.open(encoding="utf-8") as f:
+        inp_data = [json.loads(line) for line in f if line.strip()]
+    prompt = _load_instructor_prompt(dataset_name)
+
+    out_rows: list[dict] = []
+    skipped = 0
+    with judged_path.open(encoding="utf-8") as f:
+        for line in f:
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            preds = rec.get("prediction", [])
+            if len(preds) != 1:
+                skipped += 1
+                continue
+            qi, c1i, c2i = int(rec["query_idx"]), int(rec["choice1_idx"]), int(rec["choice2_idx"])
+            if preds[0] == " 1":
+                pos_text = inp_data[c1i]["input"]
+                neg_text = inp_data[c2i]["input"]
+            elif preds[0] == " 2":
+                pos_text = inp_data[c2i]["input"]
+                neg_text = inp_data[c1i]["input"]
+            else:
+                skipped += 1
+                continue
+            out_rows.append({
+                "query": [prompt, inp_data[qi]["input"]],
+                "pos":   [prompt, pos_text],
+                "neg":   [prompt, neg_text],
+                "task_name": dataset_name,
+                "query_idx": qi, "choice1_idx": c1i, "choice2_idx": c2i,
+            })
+
+    out_path.write_text(json.dumps(out_rows), encoding="utf-8")
+    print(
+        f"[clusterllm/{dataset_name}/phase=convert] {len(out_rows)} train triplets "
+        f"({skipped} skipped as ambiguous) -> {out_path}",
+        flush=True,
+    )
+    return out_path
+
+
+def finetune(
+    dataset_name: str,
+    *,
+    overwrite: bool = False,
+    epochs: int | None = None,
+    batch_size: int | None = None,
+    learning_rate: float | None = None,
+) -> Path:
+    """Phase 3: fine-tune Instructor-large on this dataset's train triplets.
+
+    Returns the path to the final checkpoint directory, suitable for passing
+    to ``embed_base(checkpoint_dir=...)`` in phase 4.
+    """
+    from benchmarking.baselines.clusterllm.finetune import (
+        UPSTREAM_BATCH_SIZE,
+        UPSTREAM_EPOCHS,
+        UPSTREAM_LR,
+        finetune_one,
+    )
+
+    train_triplets_path = CLUSTERLLM_ROOT / dataset_name / "train_triplets.json"
+    if not train_triplets_path.exists():
+        raise FileNotFoundError(f"phase 3 needs phase 2.5 output: {train_triplets_path}")
+
+    out_dir = CLUSTERLLM_ROOT / dataset_name / "checkpoint"
+    final_dir = out_dir / "final"
+    if final_dir.exists() and not overwrite:
+        print(f"[clusterllm/{dataset_name}/phase=finetune] cache hit -> {final_dir}", flush=True)
+        return final_dir
+
+    return finetune_one(
+        train_triplets_path=train_triplets_path,
+        output_dir=out_dir,
+        learning_rate=learning_rate if learning_rate is not None else UPSTREAM_LR,
+        num_train_epochs=epochs if epochs is not None else UPSTREAM_EPOCHS,
+        per_device_train_batch_size=batch_size if batch_size is not None else UPSTREAM_BATCH_SIZE,
+    )
+
+
+def cluster(
+    dataset_name: str,
+    *,
+    seed: int = 0,
+    overwrite: bool = False,
+) -> dict:
+    """Phase 4: re-encode with the finetuned checkpoint and k-means at k_in_scope.
+
+    Persists predictions + metrics via ``write_run_artifacts`` to
+    ``results/predictions/clusterllm/<dataset>/seed=<seed>.*``, matching the
+    shape used by every other baseline in this repo.
+    """
+    from benchmarking.baselines.kmeans import run_kmeans
+    from benchmarking.data_processing.load import load_processed
+    from benchmarking.evaluation.cost import CostAccumulator, WallClock
+    from benchmarking.evaluation.metrics import compute_partition_metrics
+    from benchmarking.evaluation.persistence import (
+        DocPrediction, TaxonomyEntry, write_run_artifacts,
+    )
+
+    import h5py
+    import numpy as np
+
+    final_ckpt = CLUSTERLLM_ROOT / dataset_name / "checkpoint" / "final"
+    if not final_ckpt.exists():
+        raise FileNotFoundError(f"phase 4 needs phase 3 output: {final_ckpt}")
+
+    final_embeds_path = embed_base(dataset_name, checkpoint_dir=final_ckpt, overwrite=overwrite)
+
+    ds = load_processed(dataset_name)
+    k = int(ds.meta["k_in_scope"])
+    gold_ids = [int(d["gold_label_id"]) for d in ds.documents]
+
+    cost = CostAccumulator()
+    with WallClock(cost):
+        with h5py.File(final_embeds_path, "r") as fh:
+            emb = np.array(fh["embeds"])
+        result = run_kmeans(embeddings=emb, k=k, seed=seed)
+
+    metrics = compute_partition_metrics(pred_ids=result.pred_ids, gold_ids=gold_ids)
+
+    taxonomy = [
+        TaxonomyEntry(cluster_id=i, label=f"cluster_{i}", description="")
+        for i in range(k)
+    ]
+    predictions = [
+        DocPrediction(
+            doc_id=doc["doc_id"],
+            text=doc["text"],
+            gold_label=doc["gold_label_name"],
+            gold_label_id=int(doc["gold_label_id"]),
+            is_none=bool(doc["is_none"]),
+            predicted_cluster_id=cid,
+            predicted_cluster_label=f"cluster_{cid}",
+            confidence=None,
+            iteration=0,
+        )
+        for doc, cid in zip(ds.documents, result.pred_ids)
+    ]
+    hyperparameters = {
+        **result.hyperparameters,
+        "encoder": INSTRUCTOR_MODEL,
+        "encoder_finetuned": True,
+        "checkpoint_dir": str(final_ckpt),
+    }
+    write_run_artifacts(
+        method="clusterllm",
+        dataset=dataset_name,
+        seed=seed,
+        predictions=predictions,
+        taxonomy=taxonomy,
+        cost=cost,
+        model_versions={"encoder": INSTRUCTOR_MODEL},
+        iterations=0,
+        metrics=metrics.to_dict(),
+        hyperparameters=hyperparameters,
+        extra_meta={"k_used": k, "n_docs": len(ds.documents)},
+    )
+
+    summary = {"dataset": dataset_name, "n": len(ds.documents), "k": k, **metrics.to_dict()}
+    print(f"[clusterllm/{dataset_name}/phase=cluster] {summary}", flush=True)
+    return summary

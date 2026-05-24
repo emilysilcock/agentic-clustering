@@ -1,16 +1,19 @@
-"""SLURM array dispatcher for ClusterLLM phase 0+1 on FASRC.
+"""SLURM array dispatcher for ClusterLLM on FASRC.
 
-Maps ``SLURM_ARRAY_TASK_ID`` to one of the 7 datasets and runs Instructor-
-large embedding (phase 0) + entropy-rank triplet sampling (phase 1).
-Phase 2 (Claude judging) runs locally on the laptop with Claude Code, not
-here, so the array stops after phase 1.
+Maps ``SLURM_ARRAY_TASK_ID`` to one of the 7 datasets and runs the requested
+phase. The sbatch script picks the phase via ``--phase``; the dispatcher
+calls the matching orchestrate function:
 
-Outputs per dataset land under
-``data/clusterllm/<dataset>/{base_embeds.hdf5,triplets.json}``. After the
-array completes, rsync (or scp+tar) those back to the local machine.
+    prep      → embed_base + sample_triplets        (phase 0+1, GPU)
+    finetune  → finetune                            (phase 3, GPU, heavy)
+    cluster   → cluster                             (phase 4, GPU encode + CPU k-means)
+
+Phase 2 (LLM triplet judging) runs locally — OpenAI Batch API has no
+FASRC dependency. Phase 2.5 (convert_triplets) is a tiny CPU step that also
+runs locally; its output ``train_triplets.json`` is scp'd over before phase 3.
 
 Local test (no SLURM):
-    python -m slurm.array_task --task-id 0
+    python -m slurm.array_task --phase prep --task-id 0
 """
 
 from __future__ import annotations
@@ -31,9 +34,17 @@ DATASETS = [
     "stackexchange",
 ]
 
+PHASES = ("prep", "finetune", "cluster")
+
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--phase",
+        choices=PHASES,
+        default=os.environ.get("CLUSTERLLM_PHASE", "prep"),
+        help="Which phase to run. May also be set via CLUSTERLLM_PHASE env var.",
+    )
     p.add_argument(
         "--task-id",
         type=int,
@@ -52,17 +63,25 @@ def main() -> None:
         sys.exit(f"ERROR: task_id {task_id} out of range 0..{len(DATASETS) - 1}")
 
     dataset = DATASETS[task_id]
-    print(f"[array_task] task_id={task_id} -> dataset={dataset}", flush=True)
+    print(f"[array_task] phase={args.phase} task_id={task_id} -> dataset={dataset}", flush=True)
 
-    # Imports here (after sanity checks) keep failures fast and avoid pulling
-    # in torch/transformers when we just want to print the resolved dataset.
+    # Lazy imports keep failures fast and avoid pulling torch into the help text.
     from benchmarking.baselines.clusterllm.orchestrate import (
+        cluster,
         embed_base,
+        finetune,
         sample_triplets,
     )
 
-    embed_base(dataset)
-    sample_triplets(dataset)
+    if args.phase == "prep":
+        embed_base(dataset)
+        sample_triplets(dataset)
+    elif args.phase == "finetune":
+        finetune(dataset)
+    elif args.phase == "cluster":
+        cluster(dataset)
+    else:
+        sys.exit(f"unknown phase: {args.phase}")
 
 
 if __name__ == "__main__":

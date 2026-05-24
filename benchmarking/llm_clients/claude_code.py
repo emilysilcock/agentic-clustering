@@ -38,6 +38,11 @@ WAKE_BUFFER_S = 60
 
 _USAGE_LIMIT_MARKERS = (
     re.compile(r"usage limit", re.IGNORECASE),
+    # Claude Code CLI prints "You've hit your session limit ... resets HH:MMam
+    # (America/New_York)" on the rolling-window cap. Matched verbatim from
+    # observed stderr on 2026-05-22; mismatching this wording previously caused
+    # ~6000 ClusterLLM triplets to burn as fatal errors instead of waiting.
+    re.compile(r"session limit", re.IGNORECASE),
     re.compile(r"5-hour limit", re.IGNORECASE),
     re.compile(r"reached your[^.]*limit", re.IGNORECASE),
     re.compile(r"quota exceeded", re.IGNORECASE),
@@ -49,7 +54,7 @@ _RESET_ISO = re.compile(
     re.IGNORECASE,
 )
 _RESET_CLOCK = re.compile(
-    r"reset[s]?\s+at\s+(?P<hm>\d{1,2}:\d{2})\s*(?P<ampm>am|pm)?",
+    r"reset[s]?\s+(?:at\s+)?(?P<hm>\d{1,2}:\d{2})\s*(?P<ampm>am|pm)?",
     re.IGNORECASE,
 )
 _RESET_RELATIVE = re.compile(
@@ -78,12 +83,18 @@ def call_claude(
     timeout_s: float = DEFAULT_TIMEOUT_S,
     max_limit_waits: int = DEFAULT_MAX_LIMIT_WAITS,
     log_prefix: str = "[claude_code]",
+    extra_args: list[str] | None = None,
 ) -> str:
     """Run `claude -p` once. Block on usage limits until reset, then retry.
 
     Returns the assistant text (`proc.stdout`). Raises ``ClaudeCodeError`` on
     any non-usage-limit non-zero exit, or after ``max_limit_waits`` cycles of
     usage-limit hits in a row.
+
+    ``extra_args`` are inserted between the standard flags and the prompt —
+    used by the agentic-clustering benchmark wrapper to pass
+    ``--plugin-dir`` and ``--permission-mode bypassPermissions`` so the
+    headless session can load the plugin and dispatch Task subagents.
     """
     waits = 0
     cmd = [
@@ -92,6 +103,7 @@ def call_claude(
         "--model",
         model,
         "--no-session-persistence",
+        *(extra_args or []),
         prompt,
     ]
 

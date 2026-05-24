@@ -19,7 +19,10 @@ from __future__ import annotations
 import argparse
 
 from benchmarking.baselines.clusterllm.orchestrate import (
+    cluster,
+    convert_triplets,
     embed_base,
+    finetune,
     judge,
     sample_triplets,
 )
@@ -45,6 +48,7 @@ PHASE_CHOICES = (
     "sample",
     "judge",
     "all-tonight",
+    "convert",
     "finetune",
     "cluster",
     "all",
@@ -56,7 +60,15 @@ def main() -> None:
     parser.add_argument("--phase", choices=PHASE_CHOICES, default="all-tonight")
     parser.add_argument("--only", nargs="+", choices=DATASETS)
     parser.add_argument("--concurrency", type=int, default=4)
-    parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--judge-backend",
+        choices=("openai_batch", "claude"),
+        default="openai_batch",
+        help="Phase-2 judging backend; default per SPEC §5.6.3.",
+    )
+    parser.add_argument("--model", default=None,
+                        help="Model id; defaults: gpt-5-mini for openai_batch, "
+                             f"{DEFAULT_MODEL} for claude.")
     parser.add_argument("--sample-seed", type=int, default=100,
                         help="Seed for triplet sampling (paper default: 100).")
     parser.add_argument("--max-query", type=int, default=1024,
@@ -70,7 +82,8 @@ def main() -> None:
     do_embed = args.phase in ("embed", "all-tonight", "all")
     do_sample = args.phase in ("sample", "all-tonight", "all")
     do_judge = args.phase in ("judge", "all-tonight", "all")
-    do_finetune = args.phase in ("finetune", "all")
+    do_convert = args.phase in ("convert", "finetune", "cluster", "all")
+    do_finetune = args.phase in ("finetune", "cluster", "all")
     do_cluster = args.phase in ("cluster", "all")
 
     for name in names:
@@ -85,10 +98,18 @@ def main() -> None:
                 overwrite=args.overwrite,
             )
         if do_judge:
-            judge(name, concurrency=args.concurrency, model=args.model)
-        if do_finetune or do_cluster:
-            print(f"[{METHOD}/{name}] phase 3/4 not implemented yet; "
-                  f"see TODO in orchestrate.py.", flush=True)
+            judge(
+                name,
+                concurrency=args.concurrency,
+                model=args.model,
+                backend=args.judge_backend,
+            )
+        if do_convert:
+            convert_triplets(name, overwrite=args.overwrite)
+        if do_finetune:
+            finetune(name, overwrite=args.overwrite)
+        if do_cluster:
+            cluster(name, overwrite=args.overwrite)
 
 
 if __name__ == "__main__":
