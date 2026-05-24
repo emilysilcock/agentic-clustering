@@ -19,6 +19,12 @@ dependencies = [
     "openai>=1.40",
     "tiktoken>=0.7",
     "h5py>=3.10",
+    # ClusterLLM phase 3 (sentence-transformers Trainer) needs accelerate;
+    # base sentence-transformers ships without it.
+    "accelerate>=0.26",
+    # TopicGPT baseline (vendored under benchmarking/baselines/topicgpt/_vendored)
+    "anytree>=2.12",
+    "anthropic>=0.40",
     # Torch pinned to a cu128 build. FASRC GPU nodes (driver 575.x) cap at
     # CUDA 12.9, so the default cu13x wheels silently fall back to CPU.
     # cu128 wheels also work on Windows/local with newer drivers (forward
