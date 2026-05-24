@@ -379,6 +379,15 @@ def cluster(
     gold_ids = [int(d["gold_label_id"]) for d in ds.documents]
 
     cost = CostAccumulator()
+    # Roll phase-2 LLM-judge cost into the method-level total. Without this the
+    # paper's per-method USD column would understate ClusterLLM by the entire
+    # gpt-5-mini Batch spend (~$1.50 across 7 datasets).
+    judge_summary_path = CLUSTERLLM_ROOT / dataset_name / "judge_summary.json"
+    if judge_summary_path.exists():
+        js = json.loads(judge_summary_path.read_text(encoding="utf-8"))
+        cost.input_tokens = int(js.get("input_tokens", 0))
+        cost.output_tokens = int(js.get("output_tokens", 0))
+        cost.usd = float(js.get("usd", 0.0))
     with WallClock(cost):
         with h5py.File(final_embeds_path, "r") as fh:
             emb = np.array(fh["embeds"])

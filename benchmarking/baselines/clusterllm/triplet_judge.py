@@ -416,8 +416,15 @@ def judge_triplets_openai_batch(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "usd": round(usd, 4),
+        "rate_per_1m_input_tokens_usd": _GPT5_MINI_USD_PER_1M_INPUT,
+        "rate_per_1m_output_tokens_usd": _GPT5_MINI_USD_PER_1M_OUTPUT,
+        "model": model,
         "batch_id": batch.id,
     }
+    # Persist a sidecar so phase 4 (cluster) can roll this cost into the
+    # method-level meta.json that the paper's results table aggregates.
+    sidecar_path = out_path.parent / "judge_summary.json"
+    sidecar_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(f"{log_prefix} {dataset} summary: {summary}", flush=True)
     return summary
 
