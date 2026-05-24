@@ -19,8 +19,11 @@ non-LLM phase are not preserved separately; the SPEC's intent is that the
 Label policy: we pass the integer ``gold_label_id`` through. The author
 code only uses the label for diagnostic/oracle "would the gold disagree"
 analyses (``output`` field in ``triplets.json``) and doesn't feed it to the
-LLM. Out-of-scope (none) documents are excluded — they have no clustering
-target.
+LLM. ``is_none`` documents are passed through to the model (mirroring the
+TopicGPT adapter fix on 2026-05-24) — at deployment time the method
+wouldn't know which docs are out-of-scope, so filtering them here would be
+a privileged-information leak vs the classical baselines (LDA, SBERT+kmeans,
+BERTopic, LLM-embedding+kmeans) which all cluster the full corpus.
 """
 
 from __future__ import annotations
@@ -55,8 +58,12 @@ def adapt(dataset_name: str, *, force: bool = False) -> AdaptedDataset:
     """Write ``data/clusterllm/<dataset>/large.jsonl`` from our processed dataset.
 
     Idempotent: returns the existing file if ``force=False`` and the path
-    already exists. None-class documents are filtered out (per SPEC §5.5,
-    clustering targets exclude the explicit None class).
+    already exists. All documents (including the gold "none" class on CLINC150
+    OOS and GoEmotions neutral) are passed through — at deployment the method
+    wouldn't know which docs are out-of-scope, so filtering them here would be
+    a privileged-information leak vs the classical baselines that cluster the
+    full corpus. Metrics naturally penalise the lack of a native "none" output
+    per SPEC §5.5.3.
     """
     import tiktoken
 
@@ -74,8 +81,6 @@ def adapt(dataset_name: str, *, force: bool = False) -> AdaptedDataset:
     n_truncated = 0
     lines: list[str] = []
     for doc in ds.documents:
-        if doc["is_none"]:
-            continue
         text, truncated = _truncate_to_token_limit(doc["text"], encoder, LLM_TOKEN_CAP)
         if truncated:
             n_truncated += 1
