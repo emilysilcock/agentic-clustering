@@ -20,14 +20,7 @@ claude --plugin-dir /path/to/agentic-clustering/plugin
 
 ## Usage
 
-Inside any Claude Code session, after installing:
-
-- `/cluster-run` — run the discovery workflow on a corpus (asks for path, text column, k range, etc.)
-- `/cluster-status` — show progress on the current workspace
-- `/cluster-investigate` — run an investigation on a specific question or cluster
-- `/cluster-finalize` — export a final taxonomy
-
-The workflow writes its state to `.claude/clustering/` in the project being analysed.
+The plugin works in two phases — **discover** a cluster taxonomy, then **classify** your corpus into it. See **[`plugin/README.md`](plugin/README.md)** for the full quick-start: prerequisites, the `/cluster-*` commands, and where outputs land.
 
 ## Repository layout
 
