@@ -9,12 +9,18 @@ The workflow has two phases:
 
 ## Prerequisites
 
+**For discovery** (`/cluster-run`, `/cluster-status`, `/cluster-investigate`, `/cluster-finalize`):
+
 - **Claude Code** with this plugin installed (see below).
 - **[`uv`](https://docs.astral.sh/uv/)** — the skill scripts run via `uv run` and resolve their own dependencies (PEP 723), so no manual `pip install` is needed.
-- **An API key — only for the classification phase** (`/cluster-classify` and `/cluster-tune`):
-  - `OPENAI_API_KEY` (default — uses GPT-5-mini, cheap and fast), **or**
-  - `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5).
-  - Discovery (`/cluster-run`) needs neither — it runs on Claude Code's own subagents.
+- **No API key** — discovery runs on Claude Code's own subagents.
+
+**For classification** (`/cluster-classify`, `/cluster-tune`): everything above, **plus** an API key —
+
+- `OPENAI_API_KEY` (default — uses GPT-5-mini, cheap and fast), **or**
+- `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5).
+
+(`/cluster-label` is interactive and needs no API key — just `uv`.)
 
 ## Installation
 
@@ -48,12 +54,9 @@ claude --plugin-dir /path/to/agentic-clustering/plugin
 
    Prompt caching is on by default, so cost drops sharply after the first call.
 
-### Optional — Tune classification accuracy first
-
-If you want to validate and improve the classifier before a full run:
-
-6. **`/cluster-label`** — walks you through a sample of texts one at a time; you assign each a cluster (or `none`). Produces a `labels.json` validation set.
-7. **`/cluster-tune`** — generates several prompt variants, scores each against your labels, and recommends the best one (`tuned_prompt.md`). `/cluster-classify` picks it up automatically on the next run.
+   **Optional — tune accuracy first.** Before a full classification run, you can validate and improve the classifier against hand labels:
+   - **`/cluster-label`** — walks you through a sample of texts one at a time; you assign each a cluster (or `none`). Produces a `labels.json` validation set.
+   - **`/cluster-tune`** — generates several prompt variants, scores each against your labels, and recommends the best one (`tuned_prompt.md`). `/cluster-classify` picks it up automatically on the next run.
 
 ## Commands at a glance
 
