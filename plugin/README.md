@@ -11,16 +11,13 @@ The workflow has two phases:
 
 **For discovery** (`/cluster-run`, `/cluster-status`, `/cluster-investigate`, `/cluster-finalize`):
 
-- **Claude Code** with this plugin installed (see below).
 - **[`uv`](https://docs.astral.sh/uv/)** — the skill scripts run via `uv run` and resolve their own dependencies (PEP 723), so no manual `pip install` is needed.
-- **No API key** — discovery runs on Claude Code's own subagents.
 
 **For classification** (`/cluster-classify`, `/cluster-tune`): everything above, **plus** an API key —
 
 - `OPENAI_API_KEY` (default — uses GPT-5-mini, cheap and fast), **or**
 - `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5).
 
-(`/cluster-label` is interactive and needs no API key — just `uv`.)
 
 ## Installation
 
