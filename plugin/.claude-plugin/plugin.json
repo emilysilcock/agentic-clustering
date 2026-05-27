@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "agentic-clustering",
+  "version": "0.1.0",
+  "description": "Iterative agentic discovery of natural clusters in text corpora using a proposer/synthesizer/auditor/investigator/critic loop",
+  "author": {
+    "name": "Emily Silcock and Simon Löwe",
+    "email": "emilysilcock@fas.harvard.edu"
+  },
+  "repository": "https://github.com/emilysilcock/agentic-clustering",
+  "license": "MIT",
+  "keywords": ["clustering", "nlp", "text-analysis", "agentic"]
+}

@@ -48,7 +48,7 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
   --text-col text --id-col id \
   --prompt $CLUSTERING_WORKSPACE/classification/tuning/baseline_prompt.md \
   --output $CLUSTERING_WORKSPACE/classification/tuning/baseline.csv \
-  --provider anthropic --model claude-haiku-4-5 --mode async
+  --provider openai --model gpt-5-mini --mode async
 
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/evaluate_prompt.py \
   --predictions $CLUSTERING_WORKSPACE/classification/tuning/baseline.csv \
@@ -101,7 +101,7 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
   --text-col text --id-col id \
   --prompt $CLUSTERING_WORKSPACE/classification/tuning/prompt_${NAME}.md \
   --output $CLUSTERING_WORKSPACE/classification/tuning/run_${NAME}.csv \
-  --provider anthropic --model claude-haiku-4-5 --mode async
+  --provider openai --model gpt-5-mini --mode async
 
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/evaluate_prompt.py \
   --predictions $CLUSTERING_WORKSPACE/classification/tuning/run_${NAME}.csv \

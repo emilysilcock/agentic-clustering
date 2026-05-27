@@ -18,8 +18,16 @@ classifier at call time, not by the prompt.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
+
+
+# A cluster header looks like:  ## Some Name (`c12`) [high]
+# Matching the backticked cluster id makes this an unambiguous boundary, so a
+# stray "---" divider or "## " line *inside* an example text can't be mistaken
+# for the end of an examples block.
+CLUSTER_HEADER_RE = re.compile(r"^##\s+.*\(`c\d+`\)")
 
 
 DEFAULT_HEADER = """\
@@ -37,6 +45,22 @@ INSTRUCTIONS:
 - Reasoning should be one short sentence explaining the assignment.
 """
 
+FORCE_ASSIGN_HEADER = """\
+You are a text classifier. Read the input text and assign it to exactly one of \
+the clusters defined below. Every text must be assigned to a cluster.
+
+"""
+
+FORCE_ASSIGN_FOOTER = """
+
+INSTRUCTIONS:
+- Assign exactly ONE cluster ID from those defined above. Every text must be assigned.
+- If no cluster is a perfect fit, pick the closest one and lower the confidence.
+- Use any boundary notes in the cluster descriptions to resolve ambiguous cases.
+- Confidence is an integer 1-5: 1 = very uncertain, 5 = very confident.
+- Reasoning should be one short sentence explaining the assignment.
+"""
+
 
 def strip_metadata_header(lines: list[str]) -> list[str]:
     for i, line in enumerate(lines):
@@ -47,16 +71,22 @@ def strip_metadata_header(lines: list[str]) -> list[str]:
 
 def strip_example_blocks(lines: list[str]) -> list[str]:
     """Remove '**Examples:**' blocks. A block runs from the marker line to the
-    next '---' or '## ' (cluster boundary), exclusive of the boundary."""
+    next cluster header (or end of input), exclusive of the header. The block is
+    delimited by the cluster header rather than a '---' divider because example
+    texts frequently contain '----' signature lines (and occasionally '## '
+    markdown) that would otherwise end the block early and leak example text into
+    the prompt. A single '---' divider is re-emitted before the next header to
+    preserve the visual separation between cluster definitions."""
     out = []
     i = 0
     while i < len(lines):
         if lines[i].strip() == "**Examples:**":
             i += 1
-            while i < len(lines) and not (
-                lines[i].startswith("---") or lines[i].startswith("## ")
-            ):
+            while i < len(lines) and not CLUSTER_HEADER_RE.match(lines[i]):
                 i += 1
+            if i < len(lines):  # stopped on a cluster header, not EOF
+                out.append("---")
+                out.append("")
             continue
         out.append(lines[i])
         i += 1
@@ -75,6 +105,16 @@ def main() -> int:
         "--keep-examples",
         action="store_true",
         help="Keep the **Examples:** blocks in the prompt (default: strip them)",
+    )
+    p.add_argument(
+        "--force-assign",
+        action="store_true",
+        help=(
+            "Forbid 'none' as a classification output. Use for datasets whose gold "
+            "labels don't include an OOS/none class — every text must be assigned "
+            "to a real cluster. Must be paired with classify.py --force-assign so "
+            "the JSON schema also rejects 'none'."
+        ),
     )
     args = p.parse_args()
 
@@ -96,10 +136,13 @@ def main() -> int:
         header = Path(args.header).read_text(encoding="utf-8")
         if not header.endswith("\n\n"):
             header = header.rstrip() + "\n\n"
+    elif args.force_assign:
+        header = FORCE_ASSIGN_HEADER
     else:
         header = DEFAULT_HEADER
 
-    prompt = header + cluster_definitions + DEFAULT_FOOTER
+    footer = FORCE_ASSIGN_FOOTER if args.force_assign else DEFAULT_FOOTER
+    prompt = header + cluster_definitions + footer
 
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)

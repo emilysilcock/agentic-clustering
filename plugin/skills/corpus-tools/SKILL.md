@@ -167,16 +167,19 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/build_classification_prom
 # Optional: --header <path> to override the default header
 # Optional: --keep-examples to keep the **Examples:** blocks
 
-# Classify a corpus. Supports anthropic (default, claude-haiku-4-5) and openai.
-# Mode `batch` is Anthropic-only and ~50% cheaper but takes ≤24h.
+# Classify a corpus. Supports openai (default, gpt-5-mini) and anthropic.
+# Mode `batch` is ~50% cheaper but takes ≤24h (Anthropic-only today; OpenAI batch
+# support coming).
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
-  --input <corpus.csv|json> --text-col <text_col> --id-col <id_col> \
+  --input <corpus.csv|json|jsonl> --text-col <text_col> --id-col <id_col> \
   --prompt $CLUSTERING_WORKSPACE/classification/prompt.md \
   --output $CLUSTERING_WORKSPACE/classification/classifications/<run>.csv \
-  --provider anthropic --model claude-haiku-4-5 \
+  --provider openai --model gpt-5-mini \
   --mode async --concurrency 20
-# Requires ANTHROPIC_API_KEY (or OPENAI_API_KEY for --provider openai).
-# Anthropic prompt caching is on by default — verify via cache_read_tokens column.
+# Requires OPENAI_API_KEY (or ANTHROPIC_API_KEY for --provider anthropic).
+# Prompt caching is on by default — verify via the cache_read_tokens column.
+# OpenAI caches automatically once the cacheable prefix is ≥1024 tokens.
+# Anthropic Haiku 4.5 needs ≥~4096 tokens to cache; small-k taxonomies don't qualify.
 # Structured outputs guarantee the cluster field comes from the taxonomy's IDs.
 
 # Evaluate predictions against human labels

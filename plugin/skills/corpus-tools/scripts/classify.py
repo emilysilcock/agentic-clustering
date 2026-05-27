@@ -4,6 +4,7 @@
 # dependencies = [
 #   "anthropic>=0.42.0",
 #   "openai>=1.50.0",
+#   "truststore>=0.10 ; sys_platform == 'win32'",
 # ]
 # ///
 """Classify texts into the cluster taxonomy.
@@ -25,16 +26,30 @@ Usage:
 
 from __future__ import annotations
 
+import sys
+
+if sys.platform == "win32":
+    # AVG / similar AV intercepts TLS with a root that lives in the Windows
+    # cert store but is absent from certifi. Route Python's SSL through the
+    # OS trust store. Must happen before any httpx / anthropic / openai
+    # import. Mirrors benchmarking/__init__.py.
+    import truststore as _truststore
+    _truststore.inject_into_ssl()
+
 import argparse
 import asyncio
 import csv
 import json
 import os
 import re
-import sys
 import time
 from pathlib import Path
 from typing import Any
+
+# Python's csv module defaults to a 131,072-char per-field cap. Mirror init.py:
+# opt out so long-body corpora (20 Newsgroups, etc.) don't trip the reader.
+# Capped at 2**31-1 because Windows' C long can't hold sys.maxsize.
+csv.field_size_limit(2**31 - 1)
 
 
 # ---------------------------------------------------------------------------
@@ -60,7 +75,9 @@ def load_corpus(path: Path, text_col: str, id_col: str) -> list[dict]:
         return _load_csv(path, text_col, id_col)
     if suffix == ".json":
         return _load_json(path, text_col, id_col)
-    print(f"error: unsupported format {suffix} (use .csv or .json)", file=sys.stderr)
+    if suffix == ".jsonl":
+        return _load_jsonl(path, text_col, id_col)
+    print(f"error: unsupported format {suffix} (use .csv, .json, or .jsonl)", file=sys.stderr)
     sys.exit(1)
 
 
@@ -101,6 +118,26 @@ def _load_json(path: Path, text_col: str, id_col: str) -> list[dict]:
     return out
 
 
+def _load_jsonl(path: Path, text_col: str, id_col: str) -> list[dict]:
+    """JSON-lines: one object per line. Matches the canonical `documents.jsonl`
+    layout in benchmarking/data_processing/ (Document TypedDict)."""
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if not isinstance(item, dict) or text_col not in item:
+                continue
+            text = str(item[text_col]).strip()
+            if not text:
+                continue
+            tid = str(item.get(id_col, i))
+            out.append({"id": tid, "text": text})
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Schema construction
 # ---------------------------------------------------------------------------
@@ -116,12 +153,18 @@ def extract_cluster_ids(prompt: str) -> list[str]:
     return ids
 
 
-def build_schema(cluster_ids: list[str]) -> dict:
-    """Strict JSON schema enforced at decode time on both providers."""
+def build_schema(cluster_ids: list[str], force_assign: bool = False) -> dict:
+    """Strict JSON schema enforced at decode time on both providers.
+
+    When ``force_assign`` is True, ``"none"`` is dropped from the enum so the
+    classifier is forced to pick a real cluster. Use for datasets whose gold
+    labels don't include an OOS/none class.
+    """
+    cluster_enum = list(cluster_ids) if force_assign else [*cluster_ids, "none"]
     return {
         "type": "object",
         "properties": {
-            "cluster": {"type": "string", "enum": [*cluster_ids, "none"]},
+            "cluster": {"type": "string", "enum": cluster_enum},
             "confidence": {"type": "integer", "enum": [1, 2, 3, 4, 5]},
             "reasoning": {"type": "string"},
         },
@@ -143,7 +186,10 @@ async def classify_anthropic_async(
 ) -> dict[str, dict]:
     import anthropic
 
-    client = anthropic.AsyncAnthropic()
+    # max_retries=10 turns on the SDK's built-in exponential backoff + Retry-After
+    # handling on 429s. The default of 2 is not enough for bursty workloads on
+    # long-input datasets (20 Newsgroups gave 11,927/18,331 errors at the default).
+    client = anthropic.AsyncAnthropic(max_retries=10)
     sem = asyncio.Semaphore(concurrency)
     results: dict[str, dict] = {}
 
@@ -202,7 +248,10 @@ async def classify_anthropic_batch(
 ) -> dict[str, dict]:
     import anthropic
 
-    client = anthropic.AsyncAnthropic()
+    # max_retries=10 turns on the SDK's built-in exponential backoff + Retry-After
+    # handling on 429s. The default of 2 is not enough for bursty workloads on
+    # long-input datasets (20 Newsgroups gave 11,927/18,331 errors at the default).
+    client = anthropic.AsyncAnthropic(max_retries=10)
 
     requests = [
         {
@@ -303,10 +352,14 @@ async def classify_openai_async(
                 parsed = json.loads(text or "{}")
                 usage = resp.usage
                 cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+                # OpenAI's prompt_tokens is the TOTAL (cached + uncached); subtract
+                # cached so input_tokens means the same thing as in the Anthropic
+                # rows (non-cached portion only). Keeps the CSV semantic
+                # provider-neutral and downstream cost math correct.
                 results[rec["id"]] = {
                     **parsed,
                     "error": None,
-                    "input_tokens": usage.prompt_tokens,
+                    "input_tokens": usage.prompt_tokens - cached,
                     "cache_read_tokens": cached,
                     "output_tokens": usage.completion_tokens,
                 }
@@ -325,6 +378,220 @@ async def classify_openai_async(
         done += 1
         if done % 50 == 0 or done == total:
             print(f"  classified {done}/{total}", file=sys.stderr)
+    return results
+
+
+# ---------------------------------------------------------------------------
+# OpenAI — batch
+# ---------------------------------------------------------------------------
+
+# OpenAI Batch API limit: input file size ≤ 200 MB. We target 150 MB per chunk
+# to leave headroom for JSONL newlines and any size estimation slop.
+OPENAI_BATCH_MAX_BYTES = 150 * 1024 * 1024
+
+
+def _chunk_jsonl_lines(lines: list[str], max_bytes: int) -> list[list[str]]:
+    """Group JSONL lines into chunks each ≤ max_bytes (newline-inclusive).
+
+    Single lines that exceed max_bytes are placed in their own chunk so the
+    caller fails loudly on OpenAI's upload rather than silently dropping them.
+    """
+    chunks: list[list[str]] = []
+    current: list[str] = []
+    current_bytes = 0
+    for line in lines:
+        line_bytes = len(line.encode("utf-8")) + 1  # +1 for newline separator
+        if current and current_bytes + line_bytes > max_bytes:
+            chunks.append(current)
+            current = []
+            current_bytes = 0
+        current.append(line)
+        current_bytes += line_bytes
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def _submit_and_collect_openai_batch(
+    client,
+    lines: list[str],
+    label: str,
+) -> tuple[dict[str, dict], set[str]]:
+    """Upload one JSONL chunk, submit a batch, poll, return parsed results.
+
+    Returns (results_by_custom_id, custom_ids_in_this_chunk). The custom_ids
+    set lets the caller mark missing ones as errors after the merge.
+    """
+    import io
+
+    payload = ("\n".join(lines) + "\n").encode("utf-8")
+    chunk_ids = {json.loads(line)["custom_id"] for line in lines}
+
+    print(
+        f"  [{label}] uploading {len(lines)} requests, {len(payload):,} bytes...",
+        file=sys.stderr,
+    )
+    upload = await client.files.create(
+        file=("classify_batch.jsonl", io.BytesIO(payload)),
+        purpose="batch",
+    )
+    batch = await client.batches.create(
+        input_file_id=upload.id,
+        endpoint="/v1/chat/completions",
+        completion_window="24h",
+    )
+    print(f"  [{label}] batch id: {batch.id}", file=sys.stderr)
+
+    # Poll until terminal.
+    while True:
+        b = await client.batches.retrieve(batch.id)
+        counts = b.request_counts
+        completed = getattr(counts, "completed", 0) if counts else 0
+        failed = getattr(counts, "failed", 0) if counts else 0
+        total = getattr(counts, "total", len(lines)) if counts else len(lines)
+        print(
+            f"  [{label}] status={b.status} completed={completed}/{total} failed={failed}",
+            file=sys.stderr,
+        )
+        if b.status in ("completed", "failed", "cancelled", "expired"):
+            break
+        await asyncio.sleep(60)
+
+    results: dict[str, dict] = {}
+
+    if b.output_file_id:
+        out_content = await client.files.content(b.output_file_id)
+        raw = await out_content.aread() if hasattr(out_content, "aread") else out_content.read()
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            cid = entry.get("custom_id")
+            response = entry.get("response") or {}
+            body = response.get("body") or {}
+            choices = body.get("choices") or []
+            if response.get("status_code") == 200 and choices:
+                text = choices[0].get("message", {}).get("content", "")
+                try:
+                    parsed = json.loads(text or "{}")
+                except json.JSONDecodeError as e:
+                    parsed = {"cluster": None, "confidence": None, "reasoning": None}
+                    err = f"JSONDecodeError: {e}"
+                else:
+                    err = None
+                usage = body.get("usage") or {}
+                cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
+                # OpenAI's prompt_tokens is the TOTAL (cached + uncached); subtract
+                # cached so input_tokens is the non-cached portion only (matches
+                # the Anthropic semantic). Keeps downstream cost math correct.
+                results[cid] = {
+                    **parsed,
+                    "error": err,
+                    "input_tokens": max(0, usage.get("prompt_tokens", 0) - cached),
+                    "cache_read_tokens": cached,
+                    "output_tokens": usage.get("completion_tokens", 0),
+                }
+            else:
+                err_obj = entry.get("error") or response.get("error") or {"message": "non-200 response"}
+                results[cid] = {
+                    "cluster": None, "confidence": None, "reasoning": None,
+                    "error": f"BatchError: {err_obj}",
+                    "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                }
+
+    if b.error_file_id:
+        err_content = await client.files.content(b.error_file_id)
+        raw = await err_content.aread() if hasattr(err_content, "aread") else err_content.read()
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8")
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            entry = json.loads(line)
+            cid = entry.get("custom_id")
+            results[cid] = {
+                "cluster": None, "confidence": None, "reasoning": None,
+                "error": f"BatchError: {entry.get('error') or entry}",
+                "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+            }
+
+    return results, chunk_ids
+
+
+async def classify_openai_batch(
+    model: str,
+    prompt: str,
+    schema: dict,
+    records: list[dict],
+) -> dict[str, dict]:
+    """OpenAI Batch API path. 50% discount on input + output, ≤24h SLA.
+
+    Flow: build the JSONL → chunk it to fit OpenAI's 200 MB input cap → for
+    each chunk, upload → submit → poll → parse. Merge per-chunk results.
+    Chunks are processed sequentially to keep the polling output linear.
+    """
+    import openai
+
+    client = openai.AsyncOpenAI()
+
+    # 1. Build one JSONL line per request.
+    lines = []
+    for rec in records:
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": rec["text"]},
+            ],
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "classification",
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
+        }
+        lines.append(json.dumps({
+            "custom_id": rec["id"],
+            "method": "POST",
+            "url": "/v1/chat/completions",
+            "body": body,
+        }, ensure_ascii=False))
+
+    # 2. Chunk to fit under the 200 MB OpenAI input-file cap.
+    chunks = _chunk_jsonl_lines(lines, OPENAI_BATCH_MAX_BYTES)
+    if len(chunks) > 1:
+        sizes = [sum(len(l.encode("utf-8")) + 1 for l in c) for c in chunks]
+        print(
+            f"  total payload exceeds {OPENAI_BATCH_MAX_BYTES // (1024*1024)} MB cap; "
+            f"split into {len(chunks)} chunks "
+            f"({', '.join(f'{s // (1024*1024)}MB' for s in sizes)})",
+            file=sys.stderr,
+        )
+
+    # 3. Submit + collect each chunk in sequence.
+    results: dict[str, dict] = {}
+    seen_ids: set[str] = set()
+    for i, chunk in enumerate(chunks, start=1):
+        label = f"chunk {i}/{len(chunks)}" if len(chunks) > 1 else "batch"
+        chunk_results, chunk_ids = await _submit_and_collect_openai_batch(client, chunk, label)
+        results.update(chunk_results)
+        seen_ids |= chunk_ids
+
+    # 4. Any record we didn't see in either output or error files — mark missing.
+    for rec in records:
+        if rec["id"] not in results:
+            results[rec["id"]] = {
+                "cluster": None, "confidence": None, "reasoning": None,
+                "error": "BatchError: missing from output and error files",
+                "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+            }
+
     return results
 
 
@@ -381,16 +648,22 @@ def main() -> int:
     p.add_argument("--id-col", default="id", help="ID column name (default: id)")
     p.add_argument("--prompt", required=True, help="Path to classification prompt (built by build_classification_prompt.py)")
     p.add_argument("--output", required=True, help="Path to write per-text classifications CSV")
-    p.add_argument("--provider", choices=["anthropic", "openai"], default="anthropic")
+    p.add_argument("--provider", choices=["anthropic", "openai"], default="openai")
     p.add_argument("--model", help=f"Model ID (default: {DEFAULT_MODELS})")
     p.add_argument("--mode", choices=["async", "batch"], default="async",
-                   help="async = real-time with concurrency cap; batch = Anthropic Messages Batches API (50%% cheaper, ≤24h)")
+                   help="async = real-time with concurrency cap; batch = provider Batch API (50%% cheaper, ≤24h, supports both anthropic and openai)")
     p.add_argument("--concurrency", type=int, default=20, help="Async mode only (default: 20)")
+    p.add_argument(
+        "--force-assign",
+        action="store_true",
+        help=(
+            "Forbid 'none' as a classification output. The JSON schema enum drops "
+            "'none' so the model must pick one of the cluster IDs. Use for datasets "
+            "whose gold labels don't include an OOS/none class. Pair with "
+            "build_classification_prompt.py --force-assign so the prompt agrees."
+        ),
+    )
     args = p.parse_args()
-
-    if args.mode == "batch" and args.provider != "anthropic":
-        print("error: --mode batch is only supported for --provider anthropic", file=sys.stderr)
-        return 1
 
     if args.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
         print("error: ANTHROPIC_API_KEY not set", file=sys.stderr)
@@ -410,7 +683,7 @@ def main() -> int:
     if not cluster_ids:
         print("error: no cluster IDs found in prompt (expected `## Name (`cN`)` headings)", file=sys.stderr)
         return 1
-    schema = build_schema(cluster_ids)
+    schema = build_schema(cluster_ids, force_assign=args.force_assign)
 
     records = load_corpus(Path(args.input), args.text_col, args.id_col)
     print(
@@ -424,8 +697,10 @@ def main() -> int:
         results = asyncio.run(classify_anthropic_async(model, prompt, schema, records, args.concurrency))
     elif args.provider == "anthropic" and args.mode == "batch":
         results = asyncio.run(classify_anthropic_batch(model, prompt, schema, records))
-    elif args.provider == "openai":
+    elif args.provider == "openai" and args.mode == "async":
         results = asyncio.run(classify_openai_async(model, prompt, schema, records, args.concurrency))
+    elif args.provider == "openai" and args.mode == "batch":
+        results = asyncio.run(classify_openai_batch(model, prompt, schema, records))
     else:
         print("error: unsupported provider/mode combination", file=sys.stderr)
         return 1

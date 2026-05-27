@@ -29,10 +29,10 @@ fi
 ## API keys
 
 Require one of these environment variables, depending on `--provider`:
-- `ANTHROPIC_API_KEY` (default; uses Claude Haiku 4.5 — cheap, fast)
-- `OPENAI_API_KEY` (uses GPT-5-mini)
+- `OPENAI_API_KEY` (default; uses GPT-5-mini — cheap, fast, automatic prompt cache works at any prompt size ≥1024 tokens)
+- `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5 — comparable cost on large prompts but cache requires ~4096-token minimum, so small-`k` taxonomies don't cache)
 
-If neither is set, stop and tell the user to set the appropriate one.
+If the relevant key is not set, stop and tell the user to set it.
 
 ## Workflow
 
@@ -72,12 +72,11 @@ column (and ideally an ID column). Confirm:
 Ask the user (or pick a default):
 - **`async`** — real-time with concurrency cap (~20 in parallel). Use for
   small corpora (< 1000 texts) or when you want fast turnaround.
-- **`batch`** — Anthropic Messages Batches API. **50% cheaper** but takes
-  minutes to hours. Use for full-corpus runs. Anthropic-only; not available
-  on OpenAI.
+- **`batch`** — provider Batch API. **50% cheaper** but takes minutes to hours.
+  Use for full-corpus runs.
 
-For corpora over ~1000 texts on Anthropic, default to `batch` and tell the user
-why (cost saving). Confirm before submitting.
+For corpora over ~1000 texts, default to `batch` and tell the user why (cost
+saving). Confirm before submitting.
 
 ### 5. Run classification
 
@@ -88,7 +87,7 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
   --text-col <text_col> --id-col <id_col> \
   --prompt $CLUSTERING_WORKSPACE/classification/prompt.md \
   --output $CLUSTERING_WORKSPACE/classification/classifications/${RUN_NAME}.csv \
-  --provider anthropic --model claude-haiku-4-5 \
+  --provider openai --model gpt-5-mini \
   --mode async --concurrency 20
 ```
 

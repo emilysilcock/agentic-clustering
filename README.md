@@ -4,18 +4,18 @@ A Claude Code plugin for **iterative agentic discovery of natural clusters in te
 
 ## Installation
 
-Once published, install via the Claude Code marketplace:
+The plugin lives in [`plugin/`](plugin/) and is published through the
+[`econ-nlp-plugins`](https://github.com/emilysilcock/econ-nlp-plugins) marketplace:
 
 ```text
-/plugin marketplace add <github-org>/agentic-clustering
-/plugin install agentic-clustering@agentic-clustering-marketplace
+/plugin marketplace add emilysilcock/econ-nlp-plugins
+/plugin install agentic-clustering@econ-nlp-plugins
 ```
 
-For local development (cloned repo):
+For local development from a clone of this repo:
 
 ```text
-/plugin marketplace add /path/to/agentic-clustering
-/plugin install agentic-clustering@agentic-clustering-marketplace
+claude --plugin-dir /path/to/agentic-clustering/plugin
 ```
 
 ## Usage
@@ -32,10 +32,11 @@ The workflow writes its state to `.claude/clustering/` in the project being anal
 ## Repository layout
 
 ```
-.claude-plugin/      plugin manifest + marketplace listing
-skills/              plugin skills (cluster-run, cluster-investigate, etc.)
-agents/              subagent definitions (proposer, synthesizer, auditor, investigator, critic)
-hooks/               post-subagent validation + summary hooks
+plugin/              the Claude Code plugin (the only thing shipped to plugin users)
+  .claude-plugin/      plugin manifest (plugin.json)
+  skills/              plugin skills (cluster-run, cluster-investigate, etc.)
+  agents/              subagent definitions (proposer, synthesizer, auditor, investigator, critic)
+  hooks/               post-subagent validation + summary hooks
 benchmarking/        paper experiments — Python package for evaluating the plugin against baselines
   data_processing/     HuggingFace download + preprocessing
   baselines/           prior clustering methods

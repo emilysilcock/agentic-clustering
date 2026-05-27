@@ -16,9 +16,19 @@ import statistics
 import sys
 from pathlib import Path
 
+# Python's csv module defaults to a 131,072-char per-field cap. Corpora with
+# long bodies (e.g. 20 Newsgroups with headers/footers stripped) routinely
+# exceed it. Opt out — we trust our own input. Capped at 2**31-1 because
+# Windows' C long can't hold sys.maxsize.
+csv.field_size_limit(2**31 - 1)
 
-def load_corpus(corpus_path: str, text_col: str) -> list[dict]:
-    """Load corpus from CSV or JSON file."""
+
+def load_corpus(corpus_path: str, text_col: str, id_col: str | None = None) -> list[dict]:
+    """Load corpus from CSV, JSON, or JSONL file.
+
+    ``id_col`` names the per-row id column/field. When None (or absent in a
+    row), the row index is used as the id (preserving the legacy behaviour).
+    """
     path = Path(corpus_path)
     if not path.exists():
         print(f"Error: corpus file not found: {corpus_path}", file=sys.stderr)
@@ -26,45 +36,71 @@ def load_corpus(corpus_path: str, text_col: str) -> list[dict]:
 
     suffix = path.suffix.lower()
     if suffix == ".csv":
-        return _load_csv(path, text_col)
+        return _load_csv(path, text_col, id_col)
     elif suffix == ".json":
-        return _load_json(path, text_col)
+        return _load_json(path, text_col, id_col)
+    elif suffix == ".jsonl":
+        return _load_jsonl(path, text_col, id_col)
     else:
-        print(f"Error: unsupported file format: {suffix} (use .csv or .json)", file=sys.stderr)
+        print(f"Error: unsupported file format: {suffix} (use .csv, .json, or .jsonl)", file=sys.stderr)
         sys.exit(1)
 
 
-def _load_csv(path: Path, text_col: str) -> list[dict]:
+def _load_csv(path: Path, text_col: str, id_col: str | None) -> list[dict]:
     records = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        if text_col not in (reader.fieldnames or []):
-            print(f"Error: column '{text_col}' not found. Available: {reader.fieldnames}", file=sys.stderr)
+        fields = reader.fieldnames or []
+        if text_col not in fields:
+            print(f"Error: column '{text_col}' not found. Available: {fields}", file=sys.stderr)
             sys.exit(1)
+        has_id = id_col is not None and id_col in fields
         for i, row in enumerate(reader):
             text = row[text_col]
             if text and text.strip():
-                records.append({"id": str(i), "text": text.strip()})
+                rid = str(row[id_col]).strip() if has_id else str(i)
+                records.append({"id": rid, "text": text.strip()})
     return records
 
 
-def _load_json(path: Path, text_col: str) -> list[dict]:
+def _load_json(path: Path, text_col: str, id_col: str | None) -> list[dict]:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
-    if isinstance(data, list):
-        records = []
-        for i, item in enumerate(data):
-            if isinstance(item, dict) and text_col in item:
-                text = str(item[text_col]).strip()
-                if text:
-                    item_id = str(item.get("id", i))
-                    records.append({"id": item_id, "text": text})
-            elif isinstance(item, str):
-                records.append({"id": str(i), "text": item.strip()})
-        return records
-    else:
+    if not isinstance(data, list):
         print("Error: JSON file must contain a list of objects or strings", file=sys.stderr)
         sys.exit(1)
+    lookup_id = id_col or "id"
+    records = []
+    for i, item in enumerate(data):
+        if isinstance(item, dict) and text_col in item:
+            text = str(item[text_col]).strip()
+            if text:
+                item_id = str(item.get(lookup_id, i))
+                records.append({"id": item_id, "text": text})
+        elif isinstance(item, str):
+            records.append({"id": str(i), "text": item.strip()})
+    return records
+
+
+def _load_jsonl(path: Path, text_col: str, id_col: str | None) -> list[dict]:
+    """JSON-lines: one object per line. Matches the canonical `documents.jsonl`
+    layout in benchmarking/data_processing/."""
+    lookup_id = id_col or "id"
+    records = []
+    with open(path, encoding="utf-8") as f:
+        for i, line in enumerate(f):
+            line = line.strip()
+            if not line:
+                continue
+            item = json.loads(line)
+            if not isinstance(item, dict) or text_col not in item:
+                continue
+            text = str(item[text_col]).strip()
+            if not text:
+                continue
+            item_id = str(item.get(lookup_id, i))
+            records.append({"id": item_id, "text": text})
+    return records
 
 
 
@@ -85,8 +121,17 @@ def compute_stats(records: list[dict]) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(description="Initialize clustering workspace")
-    parser.add_argument("--corpus", required=True, help="Path to corpus file (CSV or JSON)")
+    parser.add_argument("--corpus", required=True, help="Path to corpus file (CSV, JSON, or JSONL)")
     parser.add_argument("--text-col", required=True, help="Column/field name containing text")
+    parser.add_argument(
+        "--id-col",
+        default=None,
+        help=(
+            "Column/field name containing the per-row id. When omitted, the "
+            "row index is used (legacy behaviour). Set this when feeding a "
+            "corpus with canonical doc IDs (e.g. documents.jsonl)."
+        ),
+    )
     parser.add_argument("--k-range", nargs=2, type=int, required=True, metavar=("MIN", "MAX"),
                         help="Target cluster count range")
     parser.add_argument("--model-tier", default="quality", choices=["quality", "balanced", "economy"],
@@ -99,7 +144,7 @@ def main():
     args = parser.parse_args()
 
     corpus_path = os.path.abspath(args.corpus)
-    records = load_corpus(corpus_path, args.text_col)
+    records = load_corpus(corpus_path, args.text_col, args.id_col)
 
     if not records:
         print("Error: no valid texts found in corpus", file=sys.stderr)
