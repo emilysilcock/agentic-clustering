@@ -16,9 +16,13 @@ at a time. Output is `labels.json` in the workspace, consumed by
 ## Environment
 
 Scripts at `$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/`. Workspace
-defaults to `.claude/clustering/` or `$CLUSTERING_WORKSPACE`. Verify
-`$CLAUDE_PLUGIN_ROOT` before any script call (same boilerplate as
-cluster-run).
+defaults to `.claude/clustering/` or `$CLUSTERING_WORKSPACE`. Resolve both
+before any script call:
+
+```bash
+if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then export CLAUDE_PLUGIN_ROOT=$(cat .claude/clustering/.plugin_root 2>/dev/null); fi
+if [ -z "$CLUSTERING_WORKSPACE" ]; then export CLUSTERING_WORKSPACE=$(cat .claude/clustering/.active_workspace 2>/dev/null || echo .claude/clustering); fi
+```
 
 ## Workflow
 
@@ -40,14 +44,17 @@ Ask whether to draw the sample from:
 - A **separate file** the user provides (e.g., a held-out set) — read texts
   from that path
 
-For the clustering-corpus case, sample N fresh (unseen) texts:
+For the clustering-corpus case, sample N fresh (unseen) texts (the sample
+goes into the workspace so the path is portable across OSes and is cleaned
+up by finalize archive):
 ```bash
+mkdir -p $CLUSTERING_WORKSPACE/classification
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
-  --n 50 --strategy random > /tmp/labelling_sample.json
+  --n 50 --strategy random > $CLUSTERING_WORKSPACE/classification/_sampling.json
 ```
 
 For the separate-file case, ask the user for path + text column + (optional)
-id column, and read directly with `cat`/`Read`.
+id column, and read directly with `Read`.
 
 ### 3. Read the cluster definitions
 

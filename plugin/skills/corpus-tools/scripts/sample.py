@@ -14,7 +14,16 @@ import json
 import os
 import random
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from filelock import FileLock
 
@@ -23,6 +32,14 @@ def _get_workspace() -> Path:
     env_ws = os.environ.get("CLUSTERING_WORKSPACE")
     if env_ws:
         return Path(env_ws)
+    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
+    # subprocesses, so fall back to the pointer init.py writes at a fixed,
+    # project-root-relative location (hooks and tool calls share that cwd).
+    pointer = Path(".claude/clustering/.active_workspace")
+    if pointer.exists():
+        ws = pointer.read_text(encoding="utf-8").strip()
+        if ws:
+            return Path(ws)
     return Path(".claude/clustering")
 
 
@@ -61,6 +78,18 @@ def update_sampled_count(n: int):
     state["meta"]["total_texts_sampled"] = state["meta"].get("total_texts_sampled", 0) + n
     with open(state_path, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2, ensure_ascii=False)
+
+
+def log_sample(detail: str):
+    """Append a sample event to log.jsonl (same shape as init.py / state.py)."""
+    log_path = WORKSPACE / "log.jsonl"
+    entry = {
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "action": "sample",
+        "detail": detail,
+    }
+    with open(log_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
 def sample_random(corpus: list[dict], n: int, include_seen: bool) -> list[dict]:
@@ -172,7 +201,16 @@ def main():
     parser.add_argument("--ids", nargs="+", help="Specific text IDs to fetch")
     parser.add_argument("--include-seen", action="store_true",
                         help="Include previously sampled texts (default: exclude seen)")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Seed for random sampling. If omitted, an auto-seed is generated "
+                             "and recorded in log.jsonl so the sample is reproducible after the fact.")
     args = parser.parse_args()
+
+    # Pick a seed (user-provided or auto-generated) and apply it. Auto-generating
+    # rather than leaving system entropy means every sample is traceable via
+    # log.jsonl even when the caller forgot --seed.
+    seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
+    random.seed(seed)
 
     # Enforce max_texts_per_sample cap from config if set
     state_path = WORKSPACE / "state.json"
@@ -211,6 +249,21 @@ def main():
             seen.update(new_ids)
             save_seen_ids(seen)
             update_sampled_count(len(results))
+
+        # Record the sample for reproducibility. ID lookups and targeted (TF-IDF
+        # argsort) are deterministic, but log them anyway so the trail is uniform.
+        log_detail_parts = [
+            f"strategy={'ids' if args.ids else args.strategy}",
+            f"n_requested={args.n if not args.ids else len(args.ids)}",
+            f"n_returned={len(results)}",
+            f"seed={seed}",
+            f"include_seen={args.include_seen}",
+        ]
+        if args.strategy == "targeted" and args.query:
+            log_detail_parts.append(f"query={args.query!r}")
+        if args.strategy == "cluster" and args.cluster_id:
+            log_detail_parts.append(f"cluster_id={args.cluster_id}")
+        log_sample(" ".join(log_detail_parts))
 
     # Output results as JSON to stdout
     print(json.dumps(results, ensure_ascii=False, indent=2))

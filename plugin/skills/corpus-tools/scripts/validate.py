@@ -20,11 +20,27 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def _get_workspace() -> Path:
     env_ws = os.environ.get("CLUSTERING_WORKSPACE")
     if env_ws:
         return Path(env_ws)
+    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
+    # subprocesses, so fall back to the pointer init.py writes at a fixed,
+    # project-root-relative location (hooks and tool calls share that cwd).
+    pointer = Path(".claude/clustering/.active_workspace")
+    if pointer.exists():
+        ws = pointer.read_text(encoding="utf-8").strip()
+        if ws:
+            return Path(ws)
     return Path(".claude/clustering")
 
 
@@ -36,12 +52,13 @@ REQUIRED_KEYS = {
     "proposals": ["timestamp", "sample_size", "clusters"],
     "audits": ["timestamp", "n_texts", "assignments", "summary"],
     "investigations": ["timestamp"],  # investigations have varied formats
+    "critiques": ["timestamp", "clusters_reviewed", "checklist", "issues", "overall_assessment"],
 }
 
-# Additional keys for specific investigation types
+# Additional keys for specific investigation types (synthesizer and
+# investigator outputs both live under investigations/).
 INVESTIGATION_SUBTYPES = {
     "synthesis_": ["proposals_merged", "clusters_produced"],
-    "critique_": ["clusters_reviewed", "checklist", "issues", "overall_assessment"],
     "inv_": ["question", "recommendation"],
 }
 
@@ -67,14 +84,18 @@ def parse_stdin() -> tuple[str | None, str | None]:
     # Extract output file path. We try two strategies:
     # 1. Look for Write tool file_path arguments (strongest signal)
     # 2. Fall back to last matching path in payload
-    # Use the workspace path (escaped for regex) to match custom workspaces
-    ws_pattern = re.escape(str(WORKSPACE))
-    file_pattern = ws_pattern + r'/(proposals|audits|investigations)/[^\s"\'}\]]+\.json'
+    # Normalize Windows path separators: JSON encodes each \ as \\, so convert
+    # pairs to / in both payload and workspace, then match. Keeps the regex
+    # platform-agnostic without parsing the payload as JSON.
+    ws_norm = str(WORKSPACE).replace("\\", "/")
+    payload_norm = payload.replace("\\\\", "/")
+    ws_pattern = re.escape(ws_norm)
+    file_pattern = ws_pattern + r'/(proposals|audits|investigations|critiques)/[^\s"\'}\]]+\.json'
 
     # Strategy 1: Match paths near Write tool indicators
     # The hook payload includes tool call history; Write calls have "file_path"
-    write_pattern = r'"file_path"\s*:\s*"([^"]*' + ws_pattern + r'/(proposals|audits|investigations)/[^"]+\.json)"'
-    write_matches = list(re.finditer(write_pattern, payload))
+    write_pattern = r'"file_path"\s*:\s*"([^"]*' + ws_pattern + r'/(proposals|audits|investigations|critiques)/[^"]+\.json)"'
+    write_matches = list(re.finditer(write_pattern, payload_norm))
 
     output_file = None
     output_dir = None
@@ -85,7 +106,7 @@ def parse_stdin() -> tuple[str | None, str | None]:
         output_dir = last.group(2)
     else:
         # Strategy 2: Fall back to last general match
-        all_full = list(re.finditer(file_pattern, payload))
+        all_full = list(re.finditer(file_pattern, payload_norm))
         if all_full:
             last = all_full[-1]
             output_file = last.group(0)
@@ -94,7 +115,7 @@ def parse_stdin() -> tuple[str | None, str | None]:
     # Extract agent name for stable session key
     # Look for agent name patterns in the payload
     agent_pattern = r'"agent_name"\s*:\s*"(proposer|synthesizer|auditor|investigator|critic)"'
-    agent_match = re.search(agent_pattern, payload)
+    agent_match = re.search(agent_pattern, payload_norm)
     agent_name = agent_match.group(1) if agent_match else (output_dir or "unknown")
 
     # Build a session key that is unique per agent *invocation*.
@@ -116,7 +137,7 @@ def get_retry_count(session_key: str) -> int:
     retry_file = Path(tempfile.gettempdir()) / f"clustering_validate_{session_key}"
     if retry_file.exists():
         try:
-            return int(retry_file.read_text().strip())
+            return int(retry_file.read_text(encoding="utf-8").strip())
         except (ValueError, OSError):
             return 0
     return 0

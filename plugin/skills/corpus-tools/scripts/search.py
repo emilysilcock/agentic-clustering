@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["scikit-learn"]
+# dependencies = ["scikit-learn", "filelock"]
 # ///
 """TF-IDF similarity search over the corpus.
 
 Builds and caches a TF-IDF matrix on first call. Returns top-N matches
-for a query string.
+for a query string. The cache build is wrapped in a dedicated FileLock so
+concurrent agents (e.g. parallel investigators) can't race on the pickle
+writes; the lock is separate from sample.py's `.state.lock` so a long
+rebuild doesn't block sampling.
 """
 
 import argparse
@@ -16,16 +19,35 @@ import pickle
 import sys
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+from filelock import FileLock
+
 
 def _get_workspace() -> Path:
     env_ws = os.environ.get("CLUSTERING_WORKSPACE")
     if env_ws:
         return Path(env_ws)
+    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
+    # subprocesses, so fall back to the pointer init.py writes at a fixed,
+    # project-root-relative location (hooks and tool calls share that cwd).
+    pointer = Path(".claude/clustering/.active_workspace")
+    if pointer.exists():
+        ws = pointer.read_text(encoding="utf-8").strip()
+        if ws:
+            return Path(ws)
     return Path(".claude/clustering")
 
 
 WORKSPACE = _get_workspace()
 CACHE_DIR = WORKSPACE / "tfidf_cache"
+CACHE_LOCK_PATH = WORKSPACE / ".tfidf_cache.lock"
 
 
 def load_corpus() -> list[dict]:
@@ -38,7 +60,12 @@ def load_corpus() -> list[dict]:
 
 
 def get_or_build_tfidf(corpus: list[dict]):
-    """Load cached TF-IDF matrix or build and cache it."""
+    """Load cached TF-IDF matrix or build and cache it.
+
+    The build path is wrapped in a dedicated FileLock. A double-checked
+    validity test inside the lock means a contender that loses the race
+    picks up the freshly-built artifacts instead of rebuilding.
+    """
     try:
         from sklearn.feature_extraction.text import TfidfVectorizer
     except ImportError:
@@ -48,17 +75,18 @@ def get_or_build_tfidf(corpus: list[dict]):
     vectorizer_path = CACHE_DIR / "vectorizer.pkl"
     matrix_path = CACHE_DIR / "matrix.pkl"
     ids_path = CACHE_DIR / "ids.json"
-
     corpus_path = WORKSPACE / "corpus.json"
-    cache_valid = (
-        vectorizer_path.exists()
-        and matrix_path.exists()
-        and ids_path.exists()
-        and corpus_path.exists()
-        and vectorizer_path.stat().st_mtime >= corpus_path.stat().st_mtime
-    )
 
-    if cache_valid:
+    def cache_valid() -> bool:
+        return (
+            vectorizer_path.exists()
+            and matrix_path.exists()
+            and ids_path.exists()
+            and corpus_path.exists()
+            and vectorizer_path.stat().st_mtime >= corpus_path.stat().st_mtime
+        )
+
+    def load_cache():
         with open(vectorizer_path, "rb") as f:
             vectorizer = pickle.load(f)
         with open(matrix_path, "rb") as f:
@@ -67,23 +95,32 @@ def get_or_build_tfidf(corpus: list[dict]):
             ids = json.load(f)
         return vectorizer, matrix, ids
 
-    # Build from scratch
+    # Fast path — no lock needed; the cache files were written atomically by
+    # whoever built them, under the lock below.
+    if cache_valid():
+        return load_cache()
+
+    # Slow path — acquire the lock, re-check, then build.
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    texts = [r["text"] for r in corpus]
-    ids = [r["id"] for r in corpus]
+    lock = FileLock(str(CACHE_LOCK_PATH))
+    with lock:
+        if cache_valid():
+            return load_cache()
 
-    vectorizer = TfidfVectorizer(max_features=10000, stop_words="english")
-    matrix = vectorizer.fit_transform(texts)
+        texts = [r["text"] for r in corpus]
+        ids = [r["id"] for r in corpus]
+        vectorizer = TfidfVectorizer(max_features=10000, stop_words="english")
+        matrix = vectorizer.fit_transform(texts)
 
-    with open(vectorizer_path, "wb") as f:
-        pickle.dump(vectorizer, f)
-    with open(matrix_path, "wb") as f:
-        pickle.dump(matrix, f)
-    with open(ids_path, "w", encoding="utf-8") as f:
-        json.dump(ids, f)
+        with open(vectorizer_path, "wb") as f:
+            pickle.dump(vectorizer, f)
+        with open(matrix_path, "wb") as f:
+            pickle.dump(matrix, f)
+        with open(ids_path, "w", encoding="utf-8") as f:
+            json.dump(ids, f, ensure_ascii=False)
 
-    print("TF-IDF index built and cached.", file=sys.stderr)
-    return vectorizer, matrix, ids
+        print("TF-IDF index built and cached.", file=sys.stderr)
+        return vectorizer, matrix, ids
 
 
 def search(query: str, n: int) -> list[dict]:

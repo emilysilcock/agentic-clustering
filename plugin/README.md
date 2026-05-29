@@ -48,7 +48,7 @@ claude --plugin-dir /path/to/agentic-clustering/plugin
 
 ### Phase 2 — Classify your corpus
 
-5. **`/cluster-classify`** — applies the finalized `taxonomy.md` to a corpus, classifying **every** text into a cluster (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/`. Pick an execution mode:
+5. **`/cluster-classify`** — applies the finalized `taxonomy.md` to a corpus, classifying **every** text into a cluster (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/classifications/`. Pick an execution mode:
    - **`async`** — real-time, for small corpora (< ~1000 texts).
    - **`batch`** — the provider's Batch API: **~50% cheaper**, takes minutes–hours, best for full-corpus runs.
 
@@ -74,12 +74,24 @@ Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-r
 
 ## Where things live
 
-All state is written to `.claude/clustering/` in the project you're analysing (override with the `CLUSTERING_WORKSPACE` env var or `--workspace` on `/cluster-run`):
+All state is written to `.claude/clustering/` in the project you're analysing (override with the `CLUSTERING_WORKSPACE` env var or `--workspace` on `/cluster-run`).
+
+**During discovery** (between `/cluster-run` and `/cluster-finalize`):
+
+- `summary.md`, `run_log.md`, `plan.md` — live status, a session diary, and resume notes
+- `state.json` — workspace state (clusters, evidence, metrics)
+- `proposals/`, `audits/`, `investigations/`, `critiques/`, `metrics/` — intermediate per-agent outputs
+
+**After `/cluster-finalize`** — the workspace root is cleaned up:
 
 - `taxonomy.md` / `final_taxonomy.json` — the finalized taxonomy
+- `state.json`, `corpus.json` — kept for `/cluster-label` and future re-finalize
+- `archive/` — every mid-discovery artifact above (proposals, audits, investigations, critiques, metrics, `summary.md`, `run_log.md`, `plan.md`) moved here so the root stays clean
+
+**Phase-2 outputs** (created by `/cluster-label`, `/cluster-tune`, `/cluster-classify`; preserved across `/cluster-finalize`):
+
+- `classification/labels.json`, `classification/tuned_prompt.md` — labelling and tuning artifacts
 - `classification/classifications/run_*.csv` — classification outputs (one timestamped file per run)
-- `classification/labels.json`, `classification/tuned_prompt.md` — tuning artifacts
-- `summary.md`, `run_log.md`, `plan.md` — live status, a session diary, and resume notes
 
 ## How it works
 

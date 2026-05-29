@@ -4,7 +4,7 @@ description: >
   Tune the classification prompt by generating header variants, scoring each
   against human labels, and recommending the best. Requires labels.json from
   cluster-label.
-allowed-tools: Task, Bash, Read, Write
+allowed-tools: Bash, Read, Write
 ---
 
 # Prompt Tuning
@@ -16,8 +16,13 @@ recommending the winner.
 ## Environment
 
 Scripts at `$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/`. Workspace
-defaults to `.claude/clustering/` or `$CLUSTERING_WORKSPACE`. Verify
-`$CLAUDE_PLUGIN_ROOT` before any script call.
+defaults to `.claude/clustering/` or `$CLUSTERING_WORKSPACE`. Resolve both
+before any script call:
+
+```bash
+if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then export CLAUDE_PLUGIN_ROOT=$(cat .claude/clustering/.plugin_root 2>/dev/null); fi
+if [ -z "$CLUSTERING_WORKSPACE" ]; then export CLUSTERING_WORKSPACE=$(cat .claude/clustering/.active_workspace 2>/dev/null || echo .claude/clustering); fi
+```
 
 ## Workflow
 
@@ -39,9 +44,13 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/build_classification_prom
   --taxonomy $CLUSTERING_WORKSPACE/taxonomy.md \
   --output $CLUSTERING_WORKSPACE/classification/tuning/baseline_prompt.md
 
-# Build a corpus subset containing only labelled IDs, then classify
-# (the labels.json `text` field carries the text bodies we labelled)
-# Convert to a CSV / JSON the classifier can read, then:
+# Build a {id, text} corpus subset from labels.json (drops the cluster column
+# so classify.py can consume it). The --corpus fallback recovers text bodies
+# if labels.json was written in the dict shape.
+uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/labels_to_corpus.py \
+  --labels $CLUSTERING_WORKSPACE/classification/labels.json \
+  --corpus $CLUSTERING_WORKSPACE/corpus.json \
+  --output $CLUSTERING_WORKSPACE/classification/tuning/labelled_corpus.json
 
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
   --input $CLUSTERING_WORKSPACE/classification/tuning/labelled_corpus.json \
@@ -133,11 +142,13 @@ Recommend the best, but explicitly flag:
 
 ### 6. Save the chosen prompt
 
-After the user confirms (or accepts the default recommendation):
+After the user confirms (or accepts the default recommendation), copy the
+winning prompt into the location `/cluster-classify` looks for. Use a
+Python one-liner so it works on both Git Bash and vanilla PowerShell —
+`cp` is not available in stock PowerShell:
 
 ```bash
-cp $CLUSTERING_WORKSPACE/classification/tuning/prompt_${WINNER}.md \
-   $CLUSTERING_WORKSPACE/classification/tuned_prompt.md
+uv run python -c "import shutil; shutil.copy('$CLUSTERING_WORKSPACE/classification/tuning/prompt_${WINNER}.md', '$CLUSTERING_WORKSPACE/classification/tuned_prompt.md')"
 ```
 
 `/cluster-classify` will pick up `tuned_prompt.md` automatically when present.

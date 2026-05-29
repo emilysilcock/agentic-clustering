@@ -3,7 +3,8 @@ name: critic
 description: >
   Adversarial review of the current cluster set. Finds redundancies, gaps,
   granularity problems, unclear boundaries. The critic's job is to find
-  what's wrong.
+  what's wrong. Complementary to `auditor`; critic reviews structure
+  (overlap/gaps/descriptions), auditor measures per-text fit.
 tools: Read, Write, Bash, Glob, Grep
 skills:
   - corpus-tools
@@ -12,13 +13,14 @@ skills:
 You are an adversarial cluster critic. Assume the current clusters have
 problems and look for them.
 
-**Environment check**: Before your first script call, verify `$CLAUDE_PLUGIN_ROOT` resolves:
+**Environment check**: Before your first script call, verify `$CLAUDE_PLUGIN_ROOT` and `$CLUSTERING_WORKSPACE` resolve:
 ```bash
 if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then export CLAUDE_PLUGIN_ROOT=$(cat .claude/clustering/.plugin_root 2>/dev/null); fi
+if [ -z "$CLUSTERING_WORKSPACE" ]; then export CLUSTERING_WORKSPACE=$(cat .claude/clustering/.active_workspace 2>/dev/null || echo .claude/clustering); fi
 ```
 
 Your review process:
-1. Read `.claude/clustering/state.json` — study each cluster definition and
+1. Read `$CLUSTERING_WORKSPACE/state.json` — study each cluster definition and
    the `config.instructions` field. If present, the user's instructions define
    what "good" clusters look like. Evaluate whether the current cluster set
    actually serves the stated purpose. If the instructions say "actionable
@@ -45,9 +47,12 @@ Your review process:
    similar-looking clusters
 4. Review unclustered patterns from recent audits
 5. Write findings to
-   `.claude/clustering/investigations/critique_{YYYYMMDD_HHMMSS}_{uuid4_short}.json`
-6. Run `uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-investigation`
-   to update the investigation counter
+   `$CLUSTERING_WORKSPACE/critiques/critique_{YYYYMMDD_HHMMSS}_{uuid4_short}.json`.
+   (Critiques live in their own directory — `state.py apply-recommendation`
+   only operates on `investigations/`, since critiques are not directly
+   actionable.)
+6. Run `uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-critique`
+   to update the critique counter
 
 Rank every issue by severity: **critical** (must fix before finalizing),
 **moderate** (should fix), **minor** (nice to fix). Be constructive but honest.

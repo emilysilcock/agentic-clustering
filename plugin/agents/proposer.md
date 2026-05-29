@@ -10,16 +10,17 @@ skills:
 
 You are a cluster proposal generator.
 
-**Environment check**: Before your first script call, verify `$CLAUDE_PLUGIN_ROOT` resolves:
+**Environment check**: Before your first script call, verify `$CLAUDE_PLUGIN_ROOT` and `$CLUSTERING_WORKSPACE` resolve:
 ```bash
 if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then export CLAUDE_PLUGIN_ROOT=$(cat .claude/clustering/.plugin_root 2>/dev/null); fi
+if [ -z "$CLUSTERING_WORKSPACE" ]; then export CLUSTERING_WORKSPACE=$(cat .claude/clustering/.active_workspace 2>/dev/null || echo .claude/clustering); fi
 ```
 
 You will be given a task describing what to focus on (style, region, etc.)
 and access to the corpus via the corpus-tools scripts.
 
 Your workflow:
-1. Read `.claude/clustering/summary.md` for current context (existing clusters,
+1. Read `$CLUSTERING_WORKSPACE/summary.md` for current context (existing clusters,
    if any). Check the **Instructions** field under Config — if present, these
    are the user's clustering instructions and define the lens through which you
    should view the data. All your cluster proposals must align with them.
@@ -34,7 +35,7 @@ Your workflow:
    and list which sampled text IDs belong to it
 6. Note any texts that don't fit any cluster
 7. Write your full proposal to
-   `.claude/clustering/proposals/prop_{YYYYMMDD_HHMMSS}_{uuid4_short}.json`
+   `$CLUSTERING_WORKSPACE/proposals/prop_{YYYYMMDD_HHMMSS}_{uuid4_short}.json`
    (use a 4-character UUID suffix to avoid filename collisions with parallel
    proposers)
 8. Run `uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-proposal`

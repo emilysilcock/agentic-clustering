@@ -2,7 +2,10 @@
 # /// script
 # requires-python = ">=3.10"
 # dependencies = [
-#   "anthropic>=0.42.0",
+#   # >=0.74.1: first release able to send the structured-outputs `output_config`
+#   # param (now GA server-side, no beta header). An older anthropic silently
+#   # lacks the kwarg and the --provider anthropic path would break.
+#   "anthropic>=0.74.1",
 #   "openai>=1.50.0",
 #   "truststore>=0.10 ; sys_platform == 'win32'",
 # ]
@@ -28,6 +31,14 @@ from __future__ import annotations
 
 import sys
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 if sys.platform == "win32":
     # AVG / similar AV intercepts TLS with a root that lives in the Windows
     # cert store but is absent from certifi. Route Python's SSL through the
@@ -47,8 +58,8 @@ from pathlib import Path
 from typing import Any
 
 # Python's csv module defaults to a 131,072-char per-field cap. Mirror init.py:
-# opt out so long-body corpora (20 Newsgroups, etc.) don't trip the reader.
-# Capped at 2**31-1 because Windows' C long can't hold sys.maxsize.
+# opt out so long-body corpora don't trip the reader. Capped at 2**31-1
+# because Windows' C long can't hold sys.maxsize.
 csv.field_size_limit(2**31 - 1)
 
 
@@ -61,12 +72,23 @@ DEFAULT_MODELS = {
     "openai": "gpt-5-mini",
 }
 
+# Both SDKs default max_retries=2, which is not enough for bursty
+# long-input workloads (we saw the majority of requests fail under sustained
+# 429s at the default). 10 lets the SDK's exponential backoff + Retry-After
+# handling drain a rate-limit spike before giving up.
+CLIENT_MAX_RETRIES = 10
+
 
 # ---------------------------------------------------------------------------
 # I/O
 # ---------------------------------------------------------------------------
 
-def load_corpus(path: Path, text_col: str, id_col: str) -> list[dict]:
+def load_corpus(path: Path, text_col: str, id_col: str | None) -> list[dict]:
+    """Load a corpus. ``id_col`` of None means "use row index" — opt-in via
+    the CLI's --no-id flag. A missing id_col is an error, not a silent
+    fallback, so a typo in the column name doesn't quietly produce a CSV
+    keyed by row indexes.
+    """
     if not path.exists():
         print(f"error: input not found: {path}", file=sys.stderr)
         sys.exit(1)
@@ -81,7 +103,7 @@ def load_corpus(path: Path, text_col: str, id_col: str) -> list[dict]:
     sys.exit(1)
 
 
-def _load_csv(path: Path, text_col: str, id_col: str) -> list[dict]:
+def _load_csv(path: Path, text_col: str, id_col: str | None) -> list[dict]:
     out = []
     with open(path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -89,17 +111,23 @@ def _load_csv(path: Path, text_col: str, id_col: str) -> list[dict]:
         if text_col not in fields:
             print(f"error: column '{text_col}' not in CSV. Available: {fields}", file=sys.stderr)
             sys.exit(1)
-        has_id = id_col in fields
+        if id_col is not None and id_col not in fields:
+            print(
+                f"error: id column '{id_col}' not in CSV. Available: {fields}. "
+                f"Pass --no-id to fall back to row indexes.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         for i, row in enumerate(reader):
             text = (row[text_col] or "").strip()
             if not text:
                 continue
-            tid = str(row[id_col]).strip() if has_id else str(i)
+            tid = str(row[id_col]).strip() if id_col is not None else str(i)
             out.append({"id": tid, "text": text})
     return out
 
 
-def _load_json(path: Path, text_col: str, id_col: str) -> list[dict]:
+def _load_json(path: Path, text_col: str, id_col: str | None) -> list[dict]:
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
     if not isinstance(data, list):
@@ -111,16 +139,26 @@ def _load_json(path: Path, text_col: str, id_col: str) -> list[dict]:
             text = str(item[text_col]).strip()
             if not text:
                 continue
-            tid = str(item.get(id_col, i))
+            if id_col is not None:
+                if id_col not in item:
+                    print(
+                        f"error: id field '{id_col}' missing on item {i}. "
+                        f"Pass --no-id to fall back to row indexes.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                tid = str(item[id_col])
+            else:
+                tid = str(i)
             out.append({"id": tid, "text": text})
         elif isinstance(item, str):
             out.append({"id": str(i), "text": item.strip()})
     return out
 
 
-def _load_jsonl(path: Path, text_col: str, id_col: str) -> list[dict]:
-    """JSON-lines: one object per line. Matches the canonical `documents.jsonl`
-    layout in benchmarking/data_processing/ (Document TypedDict)."""
+def _load_jsonl(path: Path, text_col: str, id_col: str | None) -> list[dict]:
+    """JSON-lines: one object per line. Matches the canonical ``documents.jsonl``
+    layout (one ``{id, text, ...}`` per line)."""
     out = []
     with open(path, encoding="utf-8") as f:
         for i, line in enumerate(f):
@@ -133,7 +171,17 @@ def _load_jsonl(path: Path, text_col: str, id_col: str) -> list[dict]:
             text = str(item[text_col]).strip()
             if not text:
                 continue
-            tid = str(item.get(id_col, i))
+            if id_col is not None:
+                if id_col not in item:
+                    print(
+                        f"error: id field '{id_col}' missing on line {i+1}. "
+                        f"Pass --no-id to fall back to row indexes.",
+                        file=sys.stderr,
+                    )
+                    sys.exit(1)
+                tid = str(item[id_col])
+            else:
+                tid = str(i)
             out.append({"id": tid, "text": text})
     return out
 
@@ -142,14 +190,22 @@ def _load_jsonl(path: Path, text_col: str, id_col: str) -> list[dict]:
 # Schema construction
 # ---------------------------------------------------------------------------
 
+_CLUSTER_HEADER_RE = re.compile(r"^##\s+.*\(`(c\d+)`\)")
+
+
 def extract_cluster_ids(prompt: str) -> list[str]:
-    """Pull cluster IDs from `## Name (`<id>`) ...` lines in the prompt."""
+    """Pull cluster IDs from `## Name (`cN`) [...]` lines in the prompt.
+
+    Requires the strict `(`cN`)` shape that build_classification_prompt.py uses
+    when it stamps headings; using a loose `\\`([^\\`]+)\\`` would happily pick
+    up backticked tokens inside cluster names (e.g. `## Use of `npm` commands`
+    → "npm") and yield a wrong schema enum that silently breaks every call.
+    """
     ids = []
     for line in prompt.split("\n"):
-        if line.startswith("## "):
-            m = re.search(r"`([^`]+)`", line)
-            if m:
-                ids.append(m.group(1))
+        m = _CLUSTER_HEADER_RE.match(line)
+        if m:
+            ids.append(m.group(1))
     return ids
 
 
@@ -186,10 +242,7 @@ async def classify_anthropic_async(
 ) -> dict[str, dict]:
     import anthropic
 
-    # max_retries=10 turns on the SDK's built-in exponential backoff + Retry-After
-    # handling on 429s. The default of 2 is not enough for bursty workloads on
-    # long-input datasets (20 Newsgroups gave 11,927/18,331 errors at the default).
-    client = anthropic.AsyncAnthropic(max_retries=10)
+    client = anthropic.AsyncAnthropic(max_retries=CLIENT_MAX_RETRIES)
     sem = asyncio.Semaphore(concurrency)
     results: dict[str, dict] = {}
 
@@ -248,10 +301,7 @@ async def classify_anthropic_batch(
 ) -> dict[str, dict]:
     import anthropic
 
-    # max_retries=10 turns on the SDK's built-in exponential backoff + Retry-After
-    # handling on 429s. The default of 2 is not enough for bursty workloads on
-    # long-input datasets (20 Newsgroups gave 11,927/18,331 errors at the default).
-    client = anthropic.AsyncAnthropic(max_retries=10)
+    client = anthropic.AsyncAnthropic(max_retries=CLIENT_MAX_RETRIES)
 
     requests = [
         {
@@ -292,20 +342,31 @@ async def classify_anthropic_batch(
 
     results: dict[str, dict] = {}
     async for r in await client.messages.batches.results(batch.id):
+        cid = getattr(r, "custom_id", None)
+        if cid is None:
+            print(f"warn: anthropic batch result missing custom_id, skipping: {str(r)[:200]}", file=sys.stderr)
+            continue
         if r.result.type == "succeeded":
-            msg = r.result.message
-            text = next(blk.text for blk in msg.content if blk.type == "text")
-            parsed = json.loads(text)
-            results[r.custom_id] = {
-                **parsed,
-                "error": None,
-                "input_tokens": msg.usage.input_tokens,
-                "cache_read_tokens": msg.usage.cache_read_input_tokens,
-                "output_tokens": msg.usage.output_tokens,
-            }
+            try:
+                msg = r.result.message
+                text = next(blk.text for blk in msg.content if blk.type == "text")
+                parsed = json.loads(text)
+                results[cid] = {
+                    **parsed,
+                    "error": None,
+                    "input_tokens": msg.usage.input_tokens,
+                    "cache_read_tokens": msg.usage.cache_read_input_tokens,
+                    "output_tokens": msg.usage.output_tokens,
+                }
+            except (StopIteration, json.JSONDecodeError, AttributeError) as e:
+                results[cid] = {
+                    "cluster": None, "confidence": None, "reasoning": None,
+                    "error": f"ParseError: {type(e).__name__}: {e}",
+                    "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                }
         else:
             err = getattr(r.result, "error", r.result.type)
-            results[r.custom_id] = {
+            results[cid] = {
                 "cluster": None, "confidence": None, "reasoning": None,
                 "error": str(err),
                 "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
@@ -326,7 +387,7 @@ async def classify_openai_async(
 ) -> dict[str, dict]:
     import openai
 
-    client = openai.AsyncOpenAI()
+    client = openai.AsyncOpenAI(max_retries=CLIENT_MAX_RETRIES)
     sem = asyncio.Semaphore(concurrency)
     results: dict[str, dict] = {}
 
@@ -470,6 +531,9 @@ async def _submit_and_collect_openai_batch(
                 continue
             entry = json.loads(line)
             cid = entry.get("custom_id")
+            if cid is None:
+                print(f"warn: openai batch output entry missing custom_id, skipping: {str(entry)[:200]}", file=sys.stderr)
+                continue
             response = entry.get("response") or {}
             body = response.get("body") or {}
             choices = body.get("choices") or []
@@ -513,6 +577,9 @@ async def _submit_and_collect_openai_batch(
                 continue
             entry = json.loads(line)
             cid = entry.get("custom_id")
+            if cid is None:
+                print(f"warn: openai batch error entry missing custom_id, skipping: {str(entry)[:200]}", file=sys.stderr)
+                continue
             results[cid] = {
                 "cluster": None, "confidence": None, "reasoning": None,
                 "error": f"BatchError: {entry.get('error') or entry}",
@@ -536,7 +603,7 @@ async def classify_openai_batch(
     """
     import openai
 
-    client = openai.AsyncOpenAI()
+    client = openai.AsyncOpenAI(max_retries=CLIENT_MAX_RETRIES)
 
     # 1. Build one JSONL line per request.
     lines = []
@@ -645,11 +712,16 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--input", required=True, help="Path to corpus CSV or JSON")
     p.add_argument("--text-col", default="text", help="Text column name (default: text)")
-    p.add_argument("--id-col", default="id", help="ID column name (default: id)")
+    p.add_argument("--id-col", default="id", help="ID column name (default: id). A missing column errors; pass --no-id for a row-index fallback.")
+    p.add_argument(
+        "--no-id",
+        action="store_true",
+        help="Use row indexes as IDs instead of an id column. Use this explicitly when the corpus has no ID column; without it, a missing --id-col is a fatal error rather than a silent fallback.",
+    )
     p.add_argument("--prompt", required=True, help="Path to classification prompt (built by build_classification_prompt.py)")
     p.add_argument("--output", required=True, help="Path to write per-text classifications CSV")
     p.add_argument("--provider", choices=["anthropic", "openai"], default="openai")
-    p.add_argument("--model", help=f"Model ID (default: {DEFAULT_MODELS})")
+    p.add_argument("--model", help="Model ID (defaults: anthropic=claude-haiku-4-5, openai=gpt-5-mini)")
     p.add_argument("--mode", choices=["async", "batch"], default="async",
                    help="async = real-time with concurrency cap; batch = provider Batch API (50%% cheaper, ≤24h, supports both anthropic and openai)")
     p.add_argument("--concurrency", type=int, default=20, help="Async mode only (default: 20)")
@@ -685,7 +757,8 @@ def main() -> int:
         return 1
     schema = build_schema(cluster_ids, force_assign=args.force_assign)
 
-    records = load_corpus(Path(args.input), args.text_col, args.id_col)
+    id_col = None if args.no_id else args.id_col
+    records = load_corpus(Path(args.input), args.text_col, id_col)
     print(
         f"classifying {len(records)} texts: provider={args.provider} "
         f"model={model} mode={args.mode} clusters={len(cluster_ids)}",
