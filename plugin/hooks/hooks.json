@@ -6,13 +6,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv",
-            "args": ["run", "${CLAUDE_PLUGIN_ROOT}/skills/corpus-tools/scripts/validate.py"]
+            "command": "uv run \"${CLAUDE_PLUGIN_ROOT}/skills/corpus-tools/scripts/validate.py\""
           },
           {
             "type": "command",
-            "command": "uv",
-            "args": ["run", "${CLAUDE_PLUGIN_ROOT}/skills/corpus-tools/scripts/state.py", "summarize"]
+            "command": "uv run \"${CLAUDE_PLUGIN_ROOT}/skills/corpus-tools/scripts/state.py\" summarize"
           }
         ]
       }
