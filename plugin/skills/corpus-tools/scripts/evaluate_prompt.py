@@ -23,6 +23,14 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def load_labels(path: Path) -> dict[str, str]:
     with open(path, encoding="utf-8") as f:
@@ -113,24 +121,28 @@ def main() -> int:
     p.add_argument("--labels", required=True, help="Path to labels JSON")
     p.add_argument("--id-col", default="id")
     p.add_argument("--cluster-col", default="cluster")
-    p.add_argument("--output", help="Optional output path; defaults to stdout")
+    p.add_argument(
+        "--output",
+        required=True,
+        help=(
+            "Path to write the eval JSON. Required so downstream consumers "
+            "(e.g. /cluster-tune's variant comparison) have a stable file to "
+            "read; eliminates the previous stdout-dump pattern."
+        ),
+    )
     args = p.parse_args()
 
     labels = load_labels(Path(args.labels))
     preds = load_predictions(Path(args.predictions), args.id_col, args.cluster_col)
     metrics = compute_metrics(labels, preds)
 
-    out_json = json.dumps(metrics, indent=2)
-    if args.output:
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.output).write_text(out_json, encoding="utf-8")
-        print(f"wrote {args.output}", file=sys.stderr)
-    else:
-        print(out_json)
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    Path(args.output).write_text(json.dumps(metrics, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"wrote {args.output}", file=sys.stderr)
 
     if "accuracy" in metrics:
         print(
-            f"\naccuracy: {metrics['accuracy']:.1%} "
+            f"accuracy: {metrics['accuracy']:.1%} "
             f"({metrics['agree']}/{metrics['total']})",
             file=sys.stderr,
         )

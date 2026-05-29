@@ -17,20 +17,23 @@ Scripts are at `$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/`. This
 environment variable is set automatically by Claude Code and expands when
 you run Bash commands — pass it through as-is.
 
-**Verify before first script call**: `$CLAUDE_PLUGIN_ROOT` can be empty in some
-subagent contexts. Before running any script, verify it resolves:
+**Verify before first script call**: `$CLAUDE_PLUGIN_ROOT` and
+`$CLUSTERING_WORKSPACE` can be empty in some subagent contexts. Before running
+any script, verify both resolve:
 ```bash
 if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then
   export CLAUDE_PLUGIN_ROOT=$(cat .claude/clustering/.plugin_root 2>/dev/null)
 fi
-```
-Run this check once at the start of orchestration. For the bootstrap case
-(before init creates `.plugin_root`), fall back to finding the plugin:
-```bash
-if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then
-  export CLAUDE_PLUGIN_ROOT=$(find . -path "*/clustering/.claude-plugin/plugin.json" -exec dirname {} \; 2>/dev/null | head -1 | sed 's|/.claude-plugin||')
+if [ -z "$CLUSTERING_WORKSPACE" ]; then
+  export CLUSTERING_WORKSPACE=$(cat .claude/clustering/.active_workspace 2>/dev/null || echo .claude/clustering)
 fi
 ```
+Run this check once at the start of orchestration. `init.py` writes
+`.claude/clustering/.plugin_root` and `.claude/clustering/.active_workspace` at
+fixed project-root-relative locations (so the cats above work for custom
+workspaces too). If `$CLAUDE_PLUGIN_ROOT` and its pointer file are both missing,
+that's a Claude Code configuration problem, not something this skill should
+paper over silently — fail and surface it.
 
 The workspace directory defaults to `.claude/clustering/` but can be overridden
 via the `CLUSTERING_WORKSPACE` environment variable or `--workspace` flag on
@@ -42,7 +45,9 @@ init.
 
 Scan for `state.json` in these locations (in order):
 - `CLUSTERING_WORKSPACE` env var (if set)
-- `.claude/clustering/state.json`
+- `$(cat .claude/clustering/.active_workspace)/state.json` (the pointer file
+  init.py writes — works for custom workspaces)
+- `.claude/clustering/state.json` (default location)
 - `./clustering/state.json`
 
 If found, read the state file and show the user a brief status:
@@ -93,7 +98,7 @@ Use these to calibrate your approach.
 
 ## Staying Grounded
 
-**Always re-read `.claude/clustering/summary.md` before making decisions.** This
+**Always re-read `$CLUSTERING_WORKSPACE/summary.md` before making decisions.** This
 is your ground truth. Don't rely on your memory of previous state — the summary
 is always fresh (updated by hooks after each agent finishes). This is especially
 important after context compaction, which may lose earlier details.
@@ -146,14 +151,18 @@ in parallel using concurrent Task calls (send multiple Task invocations in one
 message). If they converge, that's signal. If they diverge, get 1-2 more.
 Wider k_range warrants more proposals.
 
-**Audit sample size** — similar to proposal samples, but use the
-seen texts are excluded by default, so audits always get fresh texts.
+**Audit sample size** — same chars-per-text guidance as proposals
+(200-400 for short texts, 50-150 for medium, 20-50 for long). Floor of ~50
+texts for the coverage % to be meaningful — a 20-text audit gives a ±10
+percentage-point confidence interval on coverage, which is noisier than the
+signal you're trying to read. Seen texts are excluded by default, so audits
+always get fresh texts.
 
 ## Iteration Loop
 
 At each step:
 
-1. Read `.claude/clustering/summary.md`
+1. Read `$CLUSTERING_WORKSPACE/summary.md`
 
 2. Reason about what would be most valuable right now:
    - No proposals yet → **propose** (start with 2-3 proposals in parallel)
@@ -176,7 +185,7 @@ At each step:
    Then store the metrics in state so summary.md reflects them:
    ```bash
    uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
-     update-cross-proposal-metrics .claude/clustering/metrics/<latest_file>.json
+     update-cross-proposal-metrics $CLUSTERING_WORKSPACE/metrics/<latest_file>.json
    ```
 
 4. Dispatch the appropriate agent with a clear, specific task description.
@@ -184,7 +193,7 @@ At each step:
    it adjust), and what question to answer. Tell it the workspace path.
    Set the model parameter according to the model tier.
 
-5. Read the agent's return summary. Re-read `.claude/clustering/summary.md`.
+5. Read the agent's return summary. Re-read `$CLUSTERING_WORKSPACE/summary.md`.
 
 6. Decide: continue, report to user, or suggest finalizing.
 
@@ -203,7 +212,7 @@ STOP and report. Don't keep going — the user should confirm direction.
 ## Before Stopping
 
 Before ending a session (whether pausing for user input or completing), write
-`.claude/clustering/plan.md` with:
+`$CLUSTERING_WORKSPACE/plan.md` with:
 - Current assessment of cluster quality
 - What you just did
 - What you would do next and why
@@ -213,10 +222,9 @@ This enables seamless resume in a new session.
 
 ## Run Logging
 
-Maintain a chronological trace at `.claude/clustering/run_log.md` (or
-`<workspace>/run_log.md` if using a custom workspace). This file is your
-session diary — it lets humans (and future sessions) understand exactly what
-happened.
+Maintain a chronological trace at `$CLUSTERING_WORKSPACE/run_log.md`. This file
+is your session diary — it lets humans (and future sessions) understand exactly
+what happened.
 
 **Write the dispatch entry BEFORE calling the agent.** Append the result entry
 AFTER it returns. This way the log is useful even if the run is interrupted.
@@ -231,12 +239,12 @@ Each entry should record:
 
 Format example:
 ```markdown
-### 2025-05-20T14:32:00Z — dispatch-proposer
+### 2026-05-28T14:32:00Z — dispatch-proposer
 - **Agent**: proposer (model: haiku)
 - **Task**: Sample 100 random texts, propose clusters with balanced style
 - **Reasoning**: First run, need initial proposals for synthesis
 
-### 2025-05-20T14:33:15Z — result-proposer
+### 2026-05-28T14:33:15Z — result-proposer
 - **Result**: Proposed 8 clusters from 100 texts, 4 unclustered
 - **Reasoning**: Need a second proposal before synthesizing — will dispatch with different angle
 ```
@@ -245,9 +253,14 @@ Format example:
 
 Agents must write output files to proper subdirectories, never the workspace
 root. The expected layout during a run:
-- `proposals/` — proposer outputs
-- `audits/` — auditor outputs
-- `investigations/` — investigator, critic, synthesizer outputs
+- `proposals/` — proposer outputs (`prop_*.json`)
+- `audits/` — auditor outputs (`audit_*.json`)
+- `investigations/` — investigator outputs (`inv_*.json`) and synthesizer
+  outputs (paired `synthesis_*.json` reasoning + `synthesis_*_clusters.json`
+  set-clusters input)
+- `critiques/` — critic outputs (`critique_*.json`). Critiques live in their
+  own directory because `state.py apply-recommendation` only operates on
+  `investigations/` — critiques carry findings, not actions.
 - `metrics/` — cross-proposal metrics
 
 Do not leave loose files (like `synthesized_clusters.json` or

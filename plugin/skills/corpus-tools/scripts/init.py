@@ -16,10 +16,18 @@ import statistics
 import sys
 from pathlib import Path
 
-# Python's csv module defaults to a 131,072-char per-field cap. Corpora with
-# long bodies (e.g. 20 Newsgroups with headers/footers stripped) routinely
-# exceed it. Opt out — we trust our own input. Capped at 2**31-1 because
-# Windows' C long can't hold sys.maxsize.
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
+# Python's csv module defaults to a 131,072-char per-field cap. Long-body
+# corpora (newsgroup-style threads, scraped pages, etc.) routinely exceed it.
+# Opt out — we trust our own input. Capped at 2**31-1 because Windows' C
+# long can't hold sys.maxsize.
 csv.field_size_limit(2**31 - 1)
 
 
@@ -109,11 +117,15 @@ def compute_stats(records: list[dict]) -> dict:
     lengths = [len(r["text"]) for r in records]
     lengths.sort()
     n = len(lengths)
-    p95_idx = int(n * 0.95)
+    # statistics.quantiles needs >=2 data points; fall back to the single value
+    # otherwise. method="inclusive" matches numpy.percentile's default linear
+    # interpolation, so p95 is "value below which 95% fall" — the previous
+    # int(n * 0.95) index returned the sample max for small corpora.
+    p95 = lengths[0] if n < 2 else round(statistics.quantiles(lengths, n=20, method="inclusive")[18])
     return {
         "avg_length": round(statistics.mean(lengths)),
         "median_length": round(statistics.median(lengths)),
-        "p95_length": lengths[min(p95_idx, n - 1)],
+        "p95_length": p95,
         "min_length": lengths[0],
         "max_length": lengths[-1],
     }
@@ -158,6 +170,7 @@ def main():
     (workspace / "proposals").mkdir(exist_ok=True)
     (workspace / "audits").mkdir(exist_ok=True)
     (workspace / "investigations").mkdir(exist_ok=True)
+    (workspace / "critiques").mkdir(exist_ok=True)
     (workspace / "tfidf_cache").mkdir(exist_ok=True)
     (workspace / "metrics").mkdir(exist_ok=True)
 
@@ -189,6 +202,7 @@ def main():
             "total_proposals": 0,
             "total_audits": 0,
             "total_investigations": 0,
+            "total_critiques": 0,
             "coverage": None,
             "mean_confidence": None,
             "rejected_hypotheses": [],
@@ -213,8 +227,20 @@ def main():
     # Write .plugin_root for fallback resolution of $CLAUDE_PLUGIN_ROOT
     # Walk up from this script's location: scripts/ -> corpus-tools/ -> skills/ -> plugin root
     plugin_root = Path(__file__).resolve().parent.parent.parent.parent
-    plugin_root_file = workspace / ".plugin_root"
-    plugin_root_file.write_text(str(plugin_root), encoding="utf-8")
+    (workspace / ".plugin_root").write_text(str(plugin_root), encoding="utf-8")
+
+    # Drop pointer files at the fixed default location too. CLUSTERING_WORKSPACE
+    # does not survive across Bash tool calls and never reaches hook subprocesses,
+    # so later contexts (sampling, state updates, the SubagentStop validate/
+    # summarize hook, the $CLAUDE_PLUGIN_ROOT fallback in skills) resolve the
+    # active workspace and plugin root from here instead. This init call and
+    # those later contexts all run with the project root as cwd, so a fixed
+    # project-root-relative path is the reliable shared coordinate. When the
+    # workspace IS the default, these writes simply coincide with the lines above.
+    pointer_dir = Path(".claude/clustering")
+    pointer_dir.mkdir(parents=True, exist_ok=True)
+    (pointer_dir / ".active_workspace").write_text(str(workspace), encoding="utf-8")
+    (pointer_dir / ".plugin_root").write_text(str(plugin_root), encoding="utf-8")
 
     # Generate initial summary
     _generate_summary(state, workspace)
@@ -266,6 +292,7 @@ def _generate_summary(state: dict, workspace: Path):
     lines.append(f"- **Proposals**: {meta['total_proposals']}")
     lines.append(f"- **Audits**: {meta['total_audits']}")
     lines.append(f"- **Investigations**: {meta['total_investigations']}")
+    lines.append(f"- **Critiques**: {meta.get('total_critiques', 0)}")
     lines.append("")
 
     if state["clusters"]:
@@ -300,7 +327,7 @@ def _generate_summary(state: dict, workspace: Path):
     # Recent log entries
     log_path = workspace / "log.jsonl"
     if log_path.exists():
-        log_lines = log_path.read_text().strip().split("\n")
+        log_lines = log_path.read_text(encoding="utf-8").strip().split("\n")
         log_lines = [l for l in log_lines if l.strip()]
         recent = log_lines[-5:] if len(log_lines) > 5 else log_lines
         if recent:

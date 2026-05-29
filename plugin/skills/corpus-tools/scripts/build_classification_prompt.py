@@ -22,6 +22,14 @@ import re
 import sys
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 # A cluster header looks like:  ## Some Name (`c12`) [high]
 # Matching the backticked cluster id makes this an unambiguous boundary, so a

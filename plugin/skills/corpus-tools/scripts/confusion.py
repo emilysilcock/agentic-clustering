@@ -19,11 +19,27 @@ from datetime import datetime, timezone
 from itertools import combinations
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 def _get_workspace() -> Path:
     env_ws = os.environ.get("CLUSTERING_WORKSPACE")
     if env_ws:
         return Path(env_ws)
+    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
+    # subprocesses, so fall back to the pointer init.py writes at a fixed,
+    # project-root-relative location (hooks and tool calls share that cwd).
+    pointer = Path(".claude/clustering/.active_workspace")
+    if pointer.exists():
+        ws = pointer.read_text(encoding="utf-8").strip()
+        if ws:
+            return Path(ws)
     return Path(".claude/clustering")
 
 
@@ -385,8 +401,10 @@ def cmd_cross_proposal(args):
     print()
     print(f"Full report: {report_path}")
 
-    # Print path for state.py integration
-    print(f"\n__REPORT_PATH__:{report_path}")
+    # Sentinel for state.py / orchestrator integration. Goes to stderr so
+    # callers using subprocess.check_output() get clean human summary on stdout
+    # and parse the path off stderr separately.
+    print(f"__REPORT_PATH__:{report_path}", file=sys.stderr)
 
 
 def cmd_element_similarity(args):
@@ -415,8 +433,8 @@ def cmd_element_similarity(args):
             assign_str = ", ".join(f'{p}→"{c}"' for p, c in it["assignments"].items())
             print(f"  {i}. [{it['text_id']}] (similarity={it['similarity']}){preview}")
             print(f"     {assign_str}")
-
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    # The cross_proposal report file already contains the structured form;
+    # element-similarity stays summary-only to keep stdout compact.
 
 
 def main():

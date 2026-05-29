@@ -17,13 +17,35 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+# Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
+# non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
+# aren't TextIOWrapper (e.g. captured in tests).
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from filelock import FileLock
+
+from _audit_metrics import (
+    compute_assignment_stats,
+    confidence_label,
+    normalize_confidence_scale,
+)
 
 
 def _get_workspace() -> Path:
     env_ws = os.environ.get("CLUSTERING_WORKSPACE")
     if env_ws:
         return Path(env_ws)
+    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
+    # subprocesses, so fall back to the pointer init.py writes at a fixed,
+    # project-root-relative location (hooks and tool calls share that cwd).
+    pointer = Path(".claude/clustering/.active_workspace")
+    if pointer.exists():
+        ws = pointer.read_text(encoding="utf-8").strip()
+        if ws:
+            return Path(ws)
     return Path(".claude/clustering")
 
 
@@ -86,6 +108,7 @@ def generate_summary(state: dict):
     lines.append(f"- **Proposals**: {meta['total_proposals']}")
     lines.append(f"- **Audits**: {meta['total_audits']}")
     lines.append(f"- **Investigations**: {meta['total_investigations']}")
+    lines.append(f"- **Critiques**: {meta.get('total_critiques', 0)}")
     lines.append("")
 
     if state["clusters"]:
@@ -104,7 +127,7 @@ def generate_summary(state: dict):
         cov = meta["coverage"]
         lines.append("## Metrics")
         pct = f"{cov['value']:.0%}" if isinstance(cov['value'], float) else str(cov['value'])
-        lines.append(f"- **Coverage**: ~{pct} (estimated from N={cov['sample_size']} {cov.get('sample_method', 'random')} sample)")
+        lines.append(f"- **Coverage**: ~{pct} (computed from N={cov['sample_size']} {cov.get('sample_method', 'random')} sample)")
         if meta.get("mean_confidence") and isinstance(meta["mean_confidence"], dict) and meta["mean_confidence"].get("value") is not None:
             mc = meta["mean_confidence"]
             lines.append(f"- **Mean confidence**: {mc['value']:.1f} (N={mc['sample_size']})")
@@ -137,7 +160,7 @@ def generate_summary(state: dict):
 
     # Recent log entries
     if LOG_PATH.exists():
-        log_lines = LOG_PATH.read_text().strip().split("\n")
+        log_lines = LOG_PATH.read_text(encoding="utf-8").strip().split("\n")
         log_lines = [l for l in log_lines if l.strip()]
         recent = log_lines[-5:] if len(log_lines) > 5 else log_lines
         if recent:
@@ -183,7 +206,11 @@ def cmd_set_clusters(args):
         state = load_state()
         next_id = state["meta"]["next_cluster_id"]
 
-        # Build lookup of existing clusters by normalized name for evidence preservation
+        # Build lookup of existing clusters by normalized name. Used both for
+        # evidence preservation (when the new input has no text_ids) and for
+        # ID reuse — re-synthesizing a cluster with the same name keeps its
+        # existing ID instead of churning to c{next}, so external references
+        # like `taxonomy.md` IDs and "investigate c3" remain stable.
         def _normalize(name: str) -> str:
             return name.strip().lower()
 
@@ -196,12 +223,20 @@ def cmd_set_clusters(args):
                                        c.get("text_ids",
                                              c.get("example_text_ids", []))))
 
-            # When input has no text_ids, preserve evidence from existing cluster
             existing = existing_by_name.get(_normalize(c["name"]))
+            # Reuse existing cluster's ID when name matches; otherwise mint a
+            # fresh one and advance next_cluster_id.
+            if existing:
+                cluster_id = existing["id"]
+            else:
+                cluster_id = f"c{next_id}"
+                next_id += 1
+
+            # When input has no text_ids, preserve evidence from existing cluster
             if not text_id_list and existing:
                 old_evidence = existing.get("evidence", {})
                 cluster = {
-                    "id": f"c{next_id}",
+                    "id": cluster_id,
                     "name": c["name"],
                     "description": c["description"],
                     "confidence": existing.get("confidence", c.get("confidence", "unaudited")),
@@ -216,7 +251,7 @@ def cmd_set_clusters(args):
                 }
             else:
                 cluster = {
-                    "id": f"c{next_id}",
+                    "id": cluster_id,
                     "name": c["name"],
                     "description": c["description"],
                     "confidence": c.get("confidence", "unaudited"),
@@ -230,7 +265,6 @@ def cmd_set_clusters(args):
                     "status": "new",
                 }
             new_clusters.append(cluster)
-            next_id += 1
 
         state["clusters"] = new_clusters
         state["meta"]["next_cluster_id"] = next_id
@@ -267,6 +301,18 @@ def cmd_count_investigation(_args):
     print(f"Investigations: {state['meta']['total_investigations']}")
 
 
+def cmd_count_critique(_args):
+    """Increment the total_critiques counter. Critiques are tracked separately
+    from investigations because they're structural reviews, not actionable
+    recommendations — apply-recommendation operates on investigations only."""
+    lock = FileLock(str(LOCK_PATH))
+    with lock:
+        state = load_state()
+        state["meta"]["total_critiques"] = state["meta"].get("total_critiques", 0) + 1
+        save_state(state)
+    print(f"Critiques: {state['meta']['total_critiques']}")
+
+
 def cmd_update_from_audit(args):
     """Update state with audit results."""
     audit_file = Path(args.file)
@@ -294,79 +340,64 @@ def cmd_update_from_audit(args):
             sys.exit(1)
 
         assignments = audit.get("assignments", [])
-        summary = audit.get("summary", {})
 
-        # Auto-detect 0-1 float scale and normalize to 1-5 integer scale
-        all_conf_values = [a["confidence"] for a in assignments if a.get("confidence") is not None]
-        if all_conf_values and max(all_conf_values) <= 1.0:
-            print(
-                "WARNING: Detected 0-1 float confidence scale. "
-                "Normalizing to 1-5 integer scale (multiply by 5).",
-                file=sys.stderr,
-            )
-            for a in assignments:
-                if a.get("confidence") is not None:
-                    a["confidence"] = round(a["confidence"] * 5, 1)
-            # Also fix summary mean_confidence if present
-            if summary.get("mean_confidence") is not None and summary["mean_confidence"] <= 1.0:
-                summary["mean_confidence"] = round(summary["mean_confidence"] * 5, 1)
+        # Defensive: if the auditor emitted 0-1 floats, rescale before counting.
+        normalize_confidence_scale(assignments)
 
-        # Update per-cluster confidence from audit
-        cluster_assignments = {}
-        for a in assignments:
-            cid = a.get("cluster_id")
-            if cid and a.get("confidence") is not None:
-                cluster_assignments.setdefault(cid, []).append(a["confidence"])
+        # Single source of truth for coverage / mean_confidence / per-cluster
+        # arithmetic. Replaces the LLM-authored summary.coverage_estimate and
+        # summary.mean_confidence the auditor used to provide — those numbers
+        # are now derived directly from `assignments` here, so they cannot
+        # disagree with metrics.py or with the per-cluster counts below.
+        stats = compute_assignment_stats(assignments)
 
         for cluster in state["clusters"]:
             cid = cluster["id"]
-            if cid in cluster_assignments:
-                confs = cluster_assignments[cid]
-                mean_conf = sum(confs) / len(confs)
+            slot = stats["per_cluster"].get(cid)
+            if slot is None or not slot["confidences"]:
+                continue
+            confs = slot["confidences"]
+            mean_conf = slot["mean_confidence"]
 
-                # Accumulate with existing audit data
-                existing_count = cluster.get("evidence", {}).get("audit_assignments", 0)
-                existing_mean = cluster.get("evidence", {}).get("audit_mean_confidence")
+            # Accumulate with existing audit data (running average across audits).
+            existing_count = cluster.get("evidence", {}).get("audit_assignments", 0)
+            existing_mean = cluster.get("evidence", {}).get("audit_mean_confidence")
 
-                if existing_mean is not None and existing_count > 0:
-                    total_count = existing_count + len(confs)
-                    combined_mean = (existing_mean * existing_count + mean_conf * len(confs)) / total_count
-                else:
-                    total_count = len(confs)
-                    combined_mean = mean_conf
+            if existing_mean is not None and existing_count > 0:
+                total_count = existing_count + len(confs)
+                combined_mean = (existing_mean * existing_count + mean_conf * len(confs)) / total_count
+            else:
+                total_count = len(confs)
+                combined_mean = mean_conf
 
-                cluster.setdefault("evidence", {})
-                cluster["evidence"]["audit_assignments"] = total_count
-                cluster["evidence"]["audit_mean_confidence"] = round(combined_mean, 2)
-                cluster["evidence"]["total_texts_seen"] = cluster["evidence"].get("total_texts_seen", 0) + len(confs)
+            cluster.setdefault("evidence", {})
+            cluster["evidence"]["audit_assignments"] = total_count
+            cluster["evidence"]["audit_mean_confidence"] = round(combined_mean, 2)
+            cluster["evidence"]["total_texts_seen"] = cluster["evidence"].get("total_texts_seen", 0) + len(confs)
 
-                # Set confidence label
-                if combined_mean >= 4.0:
-                    cluster["confidence"] = "high"
-                elif combined_mean >= 3.0:
-                    cluster["confidence"] = "medium"
-                else:
-                    cluster["confidence"] = "low"
+            cluster["confidence"] = confidence_label(combined_mean)
+            cluster["status"] = "audited"
 
-                cluster["status"] = "audited"
-
-        # Update global metrics
-        if summary:
-            state["meta"]["coverage"] = {
-                "value": summary.get("coverage_estimate"),
-                "sample_size": summary.get("total", len(assignments)),
-                "sample_method": audit.get("sample_method", "random, exclude-seen"),
-                "cluster_version": state["meta"]["cluster_version"],
-                "note": "Estimated from audit sample -- not a corpus-wide measurement",
-            }
-            state["meta"]["mean_confidence"] = {
-                "value": summary.get("mean_confidence"),
-                "sample_size": summary.get("total", len(assignments)),
-                "cluster_version": state["meta"]["cluster_version"],
-            }
+        # Global metrics — computed from `assignments`, not from the auditor's
+        # LLM-authored summary block.
+        current_version = state["meta"]["cluster_version"]
+        state["meta"]["coverage"] = {
+            "value": stats["coverage"],
+            "sample_size": stats["total"],
+            "sample_method": audit.get("sample_method", "random, exclude-seen"),
+            "cluster_version": current_version,
+            "note": "Computed from audit assignments -- not a corpus-wide measurement",
+        }
+        state["meta"]["mean_confidence"] = {
+            "value": stats["mean_confidence"],
+            "sample_size": stats["total"],
+            "cluster_version": current_version,
+        }
 
         state["meta"]["total_audits"] += 1
-        state["meta"]["last_action"] = f"audit: coverage ~{summary.get('coverage_estimate', '?')}, confidence {summary.get('mean_confidence', '?')}"
+        cov_str = f"~{stats['coverage']:.0%}" if stats["total"] else "n/a"
+        mc_str = f"{stats['mean_confidence']:.2f}" if stats["mean_confidence"] is not None else "n/a"
+        state["meta"]["last_action"] = f"audit: coverage {cov_str}, confidence {mc_str}"
 
         save_state(state)
         generate_summary(state)
@@ -436,18 +467,62 @@ def _apply_merge(state: dict, rec: dict):
         print("Error: merge requires surviving_id and targets", file=sys.stderr)
         sys.exit(1)
 
-    # Update surviving cluster
-    for cluster in state["clusters"]:
-        if cluster["id"] == surviving_id:
-            if merge_info.get("name"):
-                cluster["name"] = merge_info["name"]
-            if merge_info.get("description"):
-                cluster["description"] = merge_info["description"]
-            cluster["status"] = "modified"
-            break
-
-    # Remove merged-away clusters
+    # Build a lookup so we can read evidence from the about-to-be-removed
+    # clusters before they go.
+    clusters_by_id = {c["id"]: c for c in state["clusters"]}
     ids_to_remove = [t for t in targets if t != surviving_id]
+
+    survivor = clusters_by_id.get(surviving_id)
+    if survivor is None:
+        print(f"Error: merge survivor cluster '{surviving_id}' not found", file=sys.stderr)
+        sys.exit(1)
+
+    # Union the evidence_text_ids (dedup preserving order) and accumulate the
+    # audit counters across all sources. "Merge" implies the survivor now
+    # represents the union of inputs — its evidence should reflect that, not
+    # silently keep only its pre-merge subset.
+    survivor_evidence = survivor.setdefault("evidence", {})
+    merged_text_ids: list[str] = list(survivor_evidence.get("evidence_text_ids", []))
+    seen_text_ids = set(merged_text_ids)
+
+    total_audit_count = survivor_evidence.get("audit_assignments", 0) or 0
+    total_audit_conf_sum = (
+        (survivor_evidence.get("audit_mean_confidence") or 0.0) * total_audit_count
+    )
+    total_texts_seen = survivor_evidence.get("total_texts_seen", 0) or 0
+
+    for rid in ids_to_remove:
+        removed = clusters_by_id.get(rid)
+        if removed is None:
+            continue
+        r_ev = removed.get("evidence", {})
+        for tid in r_ev.get("evidence_text_ids", []):
+            if tid not in seen_text_ids:
+                merged_text_ids.append(tid)
+                seen_text_ids.add(tid)
+        r_count = r_ev.get("audit_assignments", 0) or 0
+        r_mean = r_ev.get("audit_mean_confidence")
+        if r_mean is not None and r_count > 0:
+            total_audit_conf_sum += r_mean * r_count
+            total_audit_count += r_count
+        total_texts_seen += r_ev.get("total_texts_seen", 0) or 0
+
+    survivor_evidence["evidence_text_ids"] = merged_text_ids
+    survivor_evidence["audit_assignments"] = total_audit_count
+    survivor_evidence["audit_mean_confidence"] = (
+        round(total_audit_conf_sum / total_audit_count, 2) if total_audit_count > 0 else None
+    )
+    survivor_evidence["total_texts_seen"] = total_texts_seen
+
+    # Update name/description on the survivor; refresh its confidence label
+    # from the newly-merged audit mean.
+    if merge_info.get("name"):
+        survivor["name"] = merge_info["name"]
+    if merge_info.get("description"):
+        survivor["description"] = merge_info["description"]
+    survivor["confidence"] = confidence_label(survivor_evidence["audit_mean_confidence"])
+    survivor["status"] = "modified"
+
     state["clusters"] = [c for c in state["clusters"] if c["id"] not in ids_to_remove]
     state["meta"]["last_action"] = f"merge: {', '.join(ids_to_remove)} into {surviving_id}"
 
@@ -473,16 +548,47 @@ def _apply_split(state: dict, rec: dict):
         print(f"Error: split target cluster '{original_id}' not found in current clusters", file=sys.stderr)
         sys.exit(1)
 
-    # First new cluster keeps the original ID
+    # Enforce coverage: the investigator must assign EVERY evidence_text_id
+    # from the parent cluster to one of the split buckets. Without this, the
+    # first bucket silently inherits the parent's full evidence list — over-
+    # claiming texts that conceptually moved to a sibling.
+    original_text_ids = list(
+        original_cluster.get("evidence", {}).get("evidence_text_ids", [])
+    )
+    assigned_ids: set[str] = set()
+    for split_def in split_into:
+        assigned_ids.update(split_def.get("example_text_ids", []))
+    missing = [tid for tid in original_text_ids if tid not in assigned_ids]
+    if missing:
+        print(
+            f"Error: split for '{original_id}' must assign every parent "
+            f"evidence_text_id to a split bucket. Missing {len(missing)}: "
+            f"{missing[:10]}{'...' if len(missing) > 10 else ''}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # First new cluster keeps the original ID. Replace its evidence_text_ids
+    # with the first split's explicit bucket (no longer inherits the parent's
+    # full list).
     first_split = split_into[0]
     original_cluster["name"] = first_split["name"]
     original_cluster["description"] = first_split["description"]
     original_cluster["confidence"] = "unaudited"
+    first_bucket = list(first_split.get("example_text_ids", []))
+    original_cluster["evidence"] = {
+        "proposed_in": original_cluster.get("evidence", {}).get("proposed_in", []),
+        "evidence_text_ids": first_bucket,
+        "audit_assignments": 0,
+        "audit_mean_confidence": None,
+        "total_texts_seen": len(first_bucket),
+    }
     original_cluster["status"] = "modified"
 
     # Remaining splits get new IDs
     next_id = state["meta"]["next_cluster_id"]
     for split_def in split_into[1:]:
+        bucket = list(split_def.get("example_text_ids", []))
         new_cluster = {
             "id": f"c{next_id}",
             "name": split_def["name"],
@@ -490,10 +596,10 @@ def _apply_split(state: dict, rec: dict):
             "confidence": "unaudited",
             "evidence": {
                 "proposed_in": [],
-                "evidence_text_ids": split_def.get("example_text_ids", []),
+                "evidence_text_ids": bucket,
                 "audit_assignments": 0,
                 "audit_mean_confidence": None,
-                "total_texts_seen": 0,
+                "total_texts_seen": len(bucket),
             },
             "status": "new",
         }
@@ -597,7 +703,27 @@ def cmd_update_descriptions(args):
 
         # Build lookup for existing clusters
         by_id = {c["id"]: c for c in state["clusters"]}
-        by_name = {c["name"].strip().lower(): c for c in state["clusters"]}
+
+        # Name lookup: detect collisions explicitly so we don't silently let one
+        # cluster update its duplicate-named sibling (dict-comprehension would
+        # be last-write-wins). Colliding names are dropped from the lookup so
+        # the only path to update them is by id.
+        by_name: dict[str, dict] = {}
+        duplicate_names: set[str] = set()
+        for c in state["clusters"]:
+            key = c["name"].strip().lower()
+            if key in by_name:
+                duplicate_names.add(key)
+            else:
+                by_name[key] = c
+        for k in duplicate_names:
+            by_name.pop(k, None)
+        if duplicate_names:
+            print(
+                f"  Warning: duplicate cluster names detected ({sorted(duplicate_names)}); "
+                f"name-based matching disabled for these — use cluster id instead.",
+                file=sys.stderr,
+            )
 
         updated = 0
         for u in updates:
@@ -643,11 +769,20 @@ def cmd_update_cross_proposal_metrics(args):
 
     element_sim = report.get("element_similarity", {})
 
+    # Store the path relative to the workspace so a moved or zipped workspace
+    # still resolves it. Fall back to absolute if the file lives outside the
+    # workspace (unusual but possible if the orchestrator passed a path from
+    # elsewhere).
+    try:
+        rel_metrics_path = str(metrics_file.resolve().relative_to(WORKSPACE.resolve()))
+    except ValueError:
+        rel_metrics_path = str(metrics_file)
+
     lock = FileLock(str(LOCK_PATH))
     with lock:
         state = load_state()
         state["meta"]["cross_proposal_metrics"] = {
-            "file": str(metrics_file),
+            "file": rel_metrics_path,
             "proposals_compared": len(report.get("proposals_compared", [])),
             "mean_ari": round(mean_ari, 3) if mean_ari is not None else None,
             "overall_element_similarity": element_sim.get("overall"),
@@ -701,14 +836,19 @@ def cmd_finalize(args):
             for af in sorted(audit_dir.glob("*.json")):
                 with open(af, encoding="utf-8") as f:
                     audit_data = json.load(f)
-                for assignment in audit_data.get("assignments", []):
+                audit_assignments = audit_data.get("assignments", [])
+                # Whole-audit scale rescue. The previous per-value `if conf <=
+                # 1.0: conf *= 5` misfired on mixed-scale audits (e.g. a 1-5
+                # audit that happened to contain a legitimate `1` got that
+                # single value inflated to 5). Use the shared helper so the
+                # rescale decision is made once per audit, matching how
+                # update-from-audit and metrics.py treat the same data.
+                normalize_confidence_scale(audit_assignments, warn=False)
+                for assignment in audit_assignments:
                     cid = assignment.get("cluster_id")
                     conf = assignment.get("confidence")
                     tid = assignment.get("text_id")
                     if cid and tid and conf is not None:
-                        # Normalize confidence if on 0-1 scale
-                        if conf <= 1.0:
-                            conf = conf * 5
                         audit_examples_by_cluster.setdefault(cid, []).append((conf, tid))
             # Sort by confidence descending, keep unique text IDs
             for cid in audit_examples_by_cluster:
@@ -808,12 +948,19 @@ def cmd_finalize(args):
         taxonomy_path = WORKSPACE / "taxonomy.md"
         taxonomy_path.write_text("\n".join(taxonomy_lines), encoding="utf-8")
 
+        # Regenerate summary.md from the freshly-saved state BEFORE archiving,
+        # so the archived summary matches the state.json snapshot we ship
+        # alongside the taxonomy. (cmd_finalize doesn't otherwise call
+        # generate_summary, and summary.md is then moved into archive/.)
+        generate_summary(state)
+
         # Archive intermediate files to clean up workspace root
         archive_dir = WORKSPACE / "archive"
         archive_dir.mkdir(exist_ok=True)
 
-        # Directories to archive
-        for subdir_name in ["proposals", "audits", "investigations", "metrics", "tfidf_cache"]:
+        # Directories to archive. `critiques/` is included so critic outputs
+        # ride along with the other intermediate artifacts.
+        for subdir_name in ["proposals", "audits", "investigations", "critiques", "metrics"]:
             subdir = WORKSPACE / subdir_name
             if subdir.exists():
                 dest = archive_dir / subdir_name
@@ -821,10 +968,21 @@ def cmd_finalize(args):
                     shutil.rmtree(dest)
                 shutil.move(str(subdir), str(dest))
 
+        # tfidf_cache holds regeneratable pickled vectorizers — delete rather
+        # than archive. search.py rebuilds lazily on next use; bytes saved
+        # outweigh the small rebuild cost (which is a discovery-time tool,
+        # rarely used post-finalize anyway).
+        tfidf_dir = WORKSPACE / "tfidf_cache"
+        if tfidf_dir.exists():
+            shutil.rmtree(tfidf_dir)
+
         # Loose files to archive (keep state.json, taxonomy.md, final_taxonomy.json, corpus.json)
         keep_files = {"state.json", "taxonomy.md", "final_taxonomy.json", "corpus.json",
-                      ".state.lock", ".plugin_root"}
-        keep_dirs = {"archive"}
+                      ".state.lock", ".plugin_root", ".active_workspace"}
+        # Keep `classification/` so a re-finalize after labelling/tuning/
+        # classifying doesn't sweep labels.json, tuned_prompt.md, or the
+        # timestamped run_*.csv outputs into the archive.
+        keep_dirs = {"archive", "classification"}
         for item in WORKSPACE.iterdir():
             if item.is_file() and item.name not in keep_files:
                 shutil.move(str(item), str(archive_dir / item.name))
@@ -838,10 +996,11 @@ def cmd_finalize(args):
         save_state(state)
         log_action("finalize", f"Exported {len(output['clusters'])} clusters to {args.output}")
 
+    total_examples = sum(len(c.get("example_texts", [])) for c in output["clusters"])
     print(f"Final taxonomy exported to {args.output}")
     print(f"Human-readable taxonomy: {taxonomy_path}")
     print(f"Intermediate files archived to {archive_dir}/")
-    print(json.dumps(output, indent=2, ensure_ascii=False))
+    print(f"  {len(output['clusters'])} clusters, {total_examples} example texts")
 
 
 def main():
@@ -856,6 +1015,9 @@ def main():
 
     # count-investigation
     subparsers.add_parser("count-investigation", help="Increment investigation counter")
+
+    # count-critique
+    subparsers.add_parser("count-critique", help="Increment critique counter")
 
     # set-clusters
     sc = subparsers.add_parser("set-clusters", help="Set clusters from file")
@@ -893,6 +1055,7 @@ def main():
         "summarize": cmd_summarize,
         "count-proposal": cmd_count_proposal,
         "count-investigation": cmd_count_investigation,
+        "count-critique": cmd_count_critique,
         "set-clusters": cmd_set_clusters,
         "update-from-audit": cmd_update_from_audit,
         "update-descriptions": cmd_update_descriptions,
