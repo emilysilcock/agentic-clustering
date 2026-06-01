@@ -112,9 +112,13 @@ def parse_stdin() -> tuple[str | None, str | None]:
             output_file = last.group(0)
             output_dir = last.group(1)
 
-    # Extract agent name for stable session key
-    # Look for agent name patterns in the payload
-    agent_pattern = r'"agent_name"\s*:\s*"(proposer|synthesizer|auditor|investigator|critic)"'
+    # Extract agent name for stable session key.
+    # SubagentStop payload field is `agent_type` (NOT `agent_name`), and plugin
+    # agents arrive namespaced as `agentic-clustering:<name>` — verified empirically
+    # 2026-06-01 by dumping the live payload. The capture group strips the
+    # namespace so the session key reads "proposer_<file_stem>" instead of
+    # "agentic-clustering:proposer_<file_stem>".
+    agent_pattern = r'"agent_type"\s*:\s*"agentic-clustering:(proposer|synthesizer|auditor|investigator|critic)"'
     agent_match = re.search(agent_pattern, payload_norm)
     agent_name = agent_match.group(1) if agent_match else (output_dir or "unknown")
 
