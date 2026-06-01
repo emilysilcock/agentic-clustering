@@ -2,7 +2,7 @@
   "hooks": {
     "SubagentStop": [
       {
-        "matcher": "proposer|synthesizer|auditor|investigator|critic",
+        "matcher": "agentic-clustering:(proposer|synthesizer|auditor|investigator|critic)",
         "hooks": [
           {
             "type": "command",
