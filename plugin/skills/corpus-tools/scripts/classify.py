@@ -293,45 +293,60 @@ async def classify_anthropic_async(
 # Anthropic — batch
 # ---------------------------------------------------------------------------
 
-async def classify_anthropic_batch(
-    model: str,
-    prompt: str,
-    schema: dict,
-    records: list[dict],
-) -> dict[str, dict]:
-    import anthropic
+# Anthropic Messages Batches API caps: 100,000 requests per batch, 256 MB
+# input size. Target 200 MB to leave headroom for JSON-encoding overhead.
+ANTHROPIC_BATCH_MAX_REQUESTS = 100_000
+ANTHROPIC_BATCH_MAX_BYTES = 200 * 1024 * 1024
 
-    client = anthropic.AsyncAnthropic(max_retries=CLIENT_MAX_RETRIES)
 
-    requests = [
-        {
-            "custom_id": rec["id"],
-            "params": {
-                "model": model,
-                "max_tokens": 512,
-                "system": [{
-                    "type": "text",
-                    "text": prompt,
-                    "cache_control": {"type": "ephemeral"},
-                }],
-                "messages": [{"role": "user", "content": rec["text"]}],
-                "output_config": {
-                    "format": {"type": "json_schema", "schema": schema},
-                },
-            },
-        }
-        for rec in records
-    ]
+def _chunk_anthropic_requests(
+    requests: list[dict], max_bytes: int, max_count: int,
+) -> list[list[dict]]:
+    """Group batch requests into chunks under both the byte and count caps.
 
-    print(f"  submitting batch of {len(requests)} requests...", file=sys.stderr)
+    Single requests that exceed max_bytes on their own are placed in their own
+    chunk so the caller fails loudly on Anthropic's side rather than silently
+    dropping them.
+    """
+    chunks: list[list[dict]] = []
+    current: list[dict] = []
+    current_bytes = 0
+    for req in requests:
+        req_bytes = len(json.dumps(req, ensure_ascii=False).encode("utf-8"))
+        if current and (
+            current_bytes + req_bytes > max_bytes or len(current) >= max_count
+        ):
+            chunks.append(current)
+            current = []
+            current_bytes = 0
+        current.append(req)
+        current_bytes += req_bytes
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+async def _submit_and_collect_anthropic_batch(
+    client,
+    requests: list[dict],
+    label: str,
+) -> tuple[dict[str, dict], set[str]]:
+    """Submit one chunk of anthropic batch requests, poll, parse results.
+
+    Returns (results_by_custom_id, custom_ids_in_this_chunk). The custom_ids
+    set lets the caller mark missing ones as errors after the merge.
+    """
+    chunk_ids = {r["custom_id"] for r in requests}
+
+    print(f"  [{label}] submitting {len(requests)} requests...", file=sys.stderr)
     batch = await client.messages.batches.create(requests=requests)
-    print(f"  batch id: {batch.id}", file=sys.stderr)
+    print(f"  [{label}] batch id: {batch.id}", file=sys.stderr)
 
     while True:
         b = await client.messages.batches.retrieve(batch.id)
         counts = b.request_counts
         print(
-            f"  status={b.processing_status} "
+            f"  [{label}] status={b.processing_status} "
             f"processing={counts.processing} succeeded={counts.succeeded} "
             f"errored={counts.errored}",
             file=sys.stderr,
@@ -344,7 +359,7 @@ async def classify_anthropic_batch(
     async for r in await client.messages.batches.results(batch.id):
         cid = getattr(r, "custom_id", None)
         if cid is None:
-            print(f"warn: anthropic batch result missing custom_id, skipping: {str(r)[:200]}", file=sys.stderr)
+            print(f"warn: [{label}] anthropic batch result missing custom_id, skipping: {str(r)[:200]}", file=sys.stderr)
             continue
         if r.result.type == "succeeded":
             try:
@@ -371,6 +386,85 @@ async def classify_anthropic_batch(
                 "error": str(err),
                 "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
             }
+    return results, chunk_ids
+
+
+async def classify_anthropic_batch(
+    model: str,
+    prompt: str,
+    schema: dict,
+    records: list[dict],
+) -> dict[str, dict]:
+    """Anthropic Batch API path. ~50% discount on input + output, ≤24h SLA.
+
+    Flow: build the request list → chunk it to fit Anthropic's caps (100k
+    requests / 256 MB input) → for each chunk, submit → poll → parse. Merge
+    per-chunk results. Chunks are processed sequentially to keep polling
+    output linear, matching the OpenAI batch path.
+    """
+    import anthropic
+
+    client = anthropic.AsyncAnthropic(max_retries=CLIENT_MAX_RETRIES)
+
+    # 1. Build one request dict per record.
+    requests = [
+        {
+            "custom_id": rec["id"],
+            "params": {
+                "model": model,
+                "max_tokens": 512,
+                "system": [{
+                    "type": "text",
+                    "text": prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }],
+                "messages": [{"role": "user", "content": rec["text"]}],
+                "output_config": {
+                    "format": {"type": "json_schema", "schema": schema},
+                },
+            },
+        }
+        for rec in records
+    ]
+
+    # 2. Chunk to fit under Anthropic's caps.
+    chunks = _chunk_anthropic_requests(
+        requests, ANTHROPIC_BATCH_MAX_BYTES, ANTHROPIC_BATCH_MAX_REQUESTS,
+    )
+    if len(chunks) > 1:
+        sizes_mb = [
+            sum(len(json.dumps(r, ensure_ascii=False).encode("utf-8")) for r in c) // (1024 * 1024)
+            for c in chunks
+        ]
+        chunk_summary = ", ".join(
+            f"{len(c)}reqs/{s}MB" for c, s in zip(chunks, sizes_mb)
+        )
+        print(
+            f"  total payload exceeds Anthropic caps "
+            f"({ANTHROPIC_BATCH_MAX_REQUESTS:,} reqs or "
+            f"{ANTHROPIC_BATCH_MAX_BYTES // (1024 * 1024)} MB); "
+            f"split into {len(chunks)} chunks ({chunk_summary})",
+            file=sys.stderr,
+        )
+
+    # 3. Submit + collect each chunk in sequence.
+    results: dict[str, dict] = {}
+    seen_ids: set[str] = set()
+    for i, chunk in enumerate(chunks, start=1):
+        label = f"chunk {i}/{len(chunks)}" if len(chunks) > 1 else "batch"
+        chunk_results, chunk_ids = await _submit_and_collect_anthropic_batch(client, chunk, label)
+        results.update(chunk_results)
+        seen_ids |= chunk_ids
+
+    # 4. Any record we didn't see in batch results — mark missing.
+    for rec in records:
+        if rec["id"] not in results:
+            results[rec["id"]] = {
+                "cluster": None, "confidence": None, "reasoning": None,
+                "error": "BatchError: missing from batch results",
+                "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+            }
+
     return results
 
 

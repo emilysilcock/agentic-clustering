@@ -16,6 +16,12 @@ import statistics
 import sys
 from pathlib import Path
 
+# Resolve sibling module — init.py is in the same `scripts/` directory as
+# `_summary.py`, but `uv run` may invoke us from any cwd. Add our own dir to
+# sys.path so the import works regardless.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from _summary import render_summary  # noqa: E402
+
 # Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
 # non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
 # aren't TextIOWrapper (e.g. captured in tests).
@@ -171,8 +177,9 @@ def main():
     (workspace / "audits").mkdir(exist_ok=True)
     (workspace / "investigations").mkdir(exist_ok=True)
     (workspace / "critiques").mkdir(exist_ok=True)
-    (workspace / "tfidf_cache").mkdir(exist_ok=True)
     (workspace / "metrics").mkdir(exist_ok=True)
+    # tfidf_cache is created lazily by search.py on first use and rmtree'd by
+    # cmd_finalize — no need to pre-create it here.
 
     # Save corpus data for sampling/searching
     corpus_store = workspace / "corpus.json"
@@ -266,79 +273,12 @@ def main():
 
 
 def _generate_summary(state: dict, workspace: Path):
-    """Generate summary.md from state."""
-    lines = ["# Clustering Workspace Summary", ""]
-    corpus = state["corpus"]
-    lines.append(f"## Corpus")
-    lines.append(f"- **Path**: {corpus['path']}")
-    lines.append(f"- **Size**: {corpus['size']} texts")
-    lines.append(f"- **Avg length**: {corpus['stats']['avg_length']} chars")
-    lines.append(f"- **Median length**: {corpus['stats']['median_length']} chars")
-    lines.append(f"- **P95 length**: {corpus['stats']['p95_length']} chars")
-    lines.append("")
-
-    config = state["config"]
-    lines.append(f"## Config")
-    lines.append(f"- **k_range**: {config['k_range'][0]}-{config['k_range'][1]}")
-    lines.append(f"- **Model tier**: {config['model_tier']}")
-    if config.get("instructions"):
-        lines.append(f"- **Instructions**: {config['instructions']}")
-    lines.append("")
-
-    meta = state["meta"]
-    lines.append(f"## Progress")
-    lines.append(f"- **Cluster version**: {meta['cluster_version']}")
-    lines.append(f"- **Texts sampled**: {meta['total_texts_sampled']}")
-    lines.append(f"- **Proposals**: {meta['total_proposals']}")
-    lines.append(f"- **Audits**: {meta['total_audits']}")
-    lines.append(f"- **Investigations**: {meta['total_investigations']}")
-    lines.append(f"- **Critiques**: {meta.get('total_critiques', 0)}")
-    lines.append("")
-
-    if state["clusters"]:
-        lines.append(f"## Clusters ({len(state['clusters'])})")
-        for c in state["clusters"]:
-            conf = c.get("confidence", "unaudited")
-            lines.append(f"- **{c['id']}**: {c['name']} [{conf}]")
-            lines.append(f"  {c['description']}")
-        lines.append("")
-
-    if meta.get("coverage") and meta["coverage"].get("value") is not None:
-        cov = meta["coverage"]
-        lines.append(f"## Metrics")
-        lines.append(f"- **Coverage**: ~{cov['value']:.0%} (estimated from N={cov['sample_size']} {cov.get('sample_method', 'random')} sample)")
-        if meta.get("mean_confidence") and meta["mean_confidence"].get("value") is not None:
-            mc = meta["mean_confidence"]
-            lines.append(f"- **Mean confidence**: {mc['value']:.1f} (N={mc['sample_size']})")
-        lines.append("")
-
-    if meta.get("rejected_hypotheses"):
-        lines.append("## Rejected Hypotheses")
-        for rh in meta["rejected_hypotheses"]:
-            lines.append(f"- {rh['hypothesis']} → {rh['finding']}")
-        lines.append("")
-
-    if meta.get("open_questions"):
-        lines.append("## Open Questions")
-        for q in meta["open_questions"]:
-            lines.append(f"- {q}")
-        lines.append("")
-
-    # Recent log entries
+    """Generate summary.md from state. Layout lives in _summary.render_summary
+    (shared with state.py's hook-time summarize so the two paths can't drift)."""
     log_path = workspace / "log.jsonl"
-    if log_path.exists():
-        log_lines = log_path.read_text(encoding="utf-8").strip().split("\n")
-        log_lines = [l for l in log_lines if l.strip()]
-        recent = log_lines[-5:] if len(log_lines) > 5 else log_lines
-        if recent:
-            lines.append("## Recent Actions")
-            for entry_str in recent:
-                entry = json.loads(entry_str)
-                lines.append(f"- [{entry.get('timestamp', '?')}] {entry.get('action', '?')}: {entry.get('detail', '')}")
-            lines.append("")
-
+    content = render_summary(state, log_path=log_path)
     summary_path = workspace / "summary.md"
-    summary_path.write_text("\n".join(lines), encoding="utf-8")
+    summary_path.write_text(content, encoding="utf-8")
 
 
 def _log_action(workspace: Path, action: str, detail: str):

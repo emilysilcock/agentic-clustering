@@ -88,7 +88,10 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/init.py \
   --max-texts-per-sample <n>  # optional hard cap
 ```
 
-Set the env var for all subsequent commands:
+Set the env var for the *current* Bash call (note: env vars don't propagate
+across separate Bash tool calls and never reach hooks — later contexts resolve
+the workspace via the `.claude/clustering/.active_workspace` pointer file that
+`init.py` writes at a fixed location):
 ```bash
 export CLUSTERING_WORKSPACE=<dir>
 ```

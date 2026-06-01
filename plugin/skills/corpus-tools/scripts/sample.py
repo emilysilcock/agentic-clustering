@@ -142,7 +142,14 @@ def sample_targeted(corpus: list[dict], n: int, query: str, include_seen: bool) 
 
 
 def sample_cluster(corpus: list[dict], n: int, cluster_id: str) -> list[dict]:
-    """Sample texts that were assigned to a specific cluster in recent audits."""
+    """Sample texts that were assigned to a specific cluster in recent audits.
+
+    Note: ``--include-seen`` is intentionally not honored here. Cluster-strategy
+    pulls from audit assignments, and audited texts are always already in
+    ``seen_ids`` (audits mark-seen). Honoring the flag would always return zero
+    when unset; the use case is "show me examples assigned to cluster X", which
+    fundamentally requires seen texts. The CLI help notes this asymmetry.
+    """
     audit_dir = WORKSPACE / "audits"
     if not audit_dir.exists():
         print("Error: no audits found", file=sys.stderr)
@@ -200,7 +207,10 @@ def main():
     parser.add_argument("--cluster-id", help="Cluster ID for cluster-based sampling")
     parser.add_argument("--ids", nargs="+", help="Specific text IDs to fetch")
     parser.add_argument("--include-seen", action="store_true",
-                        help="Include previously sampled texts (default: exclude seen)")
+                        help="Include previously sampled texts (default: exclude seen). "
+                             "Only applies to --strategy random/targeted; the cluster strategy "
+                             "intentionally ignores this flag because audited texts are seen by "
+                             "definition.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Seed for random sampling. If omitted, an auto-seed is generated "
                              "and recorded in log.jsonl so the sample is reproducible after the fact.")

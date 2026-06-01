@@ -71,7 +71,7 @@ Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-r
 
 ## Where things live
 
-All state is written to `.claude/clustering/` in the project you're analysing (override with the `CLUSTERING_WORKSPACE` env var or `--workspace` on `/cluster-run`).
+All state is written to `.claude/clustering/` in the project you're analysing (override by setting `CLUSTERING_WORKSPACE` before launching Claude Code, or by answering `/cluster-run`'s "where should the workspace live?" prompt with a custom path).
 
 **During discovery** (between `/cluster-run` and `/cluster-finalize`):
 

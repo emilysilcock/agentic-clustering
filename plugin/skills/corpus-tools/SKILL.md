@@ -81,8 +81,13 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py summarize
 # Increment proposal counter (called by proposer after writing output)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-proposal
 
-# Increment investigation counter (called by investigator/critic after writing output)
+# Increment investigation counter (called by investigator after writing output)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-investigation
+
+# Increment critique counter (called by critic after writing output — critics
+# are tracked separately from investigations because apply-recommendation
+# only operates on investigations, not critiques)
+uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-critique
 
 # Set clusters from synthesizer output (see Input Schemas section for format)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \

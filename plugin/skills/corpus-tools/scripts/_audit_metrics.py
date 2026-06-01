@@ -6,7 +6,10 @@ and mean confidence. Centralising the arithmetic here makes the two paths
 agree by construction and removes the previous reliance on the auditor LLM's
 own `summary` block for the headline coverage and mean-confidence numbers.
 
-Pure stdlib; safe to import from any PEP 723 script in this directory.
+Stdlib only (no third-party deps); safe to import from any PEP 723 script in
+this directory. Note: import has one side effect — it reconfigures
+`sys.stdout`/`sys.stderr` to UTF-8 to match the rest of the codebase (idempotent,
+no-op on already-reconfigured or non-TextIOWrapper streams).
 """
 
 from __future__ import annotations

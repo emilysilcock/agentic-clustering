@@ -32,6 +32,7 @@ from _audit_metrics import (
     confidence_label,
     normalize_confidence_scale,
 )
+from _summary import render_summary
 
 
 def _get_workspace() -> Path:
@@ -81,100 +82,10 @@ def log_action(action: str, detail: str, metadata: dict | None = None):
 
 
 def generate_summary(state: dict):
-    """Generate summary.md from current state."""
-    lines = ["# Clustering Workspace Summary", ""]
-
-    corpus = state["corpus"]
-    lines.append("## Corpus")
-    lines.append(f"- **Path**: {corpus['path']}")
-    lines.append(f"- **Size**: {corpus['size']} texts")
-    lines.append(f"- **Avg length**: {corpus['stats']['avg_length']} chars")
-    lines.append(f"- **Median length**: {corpus['stats']['median_length']} chars")
-    lines.append(f"- **P95 length**: {corpus['stats']['p95_length']} chars")
-    lines.append("")
-
-    config = state["config"]
-    lines.append("## Config")
-    lines.append(f"- **k_range**: {config['k_range'][0]}-{config['k_range'][1]}")
-    lines.append(f"- **Model tier**: {config['model_tier']}")
-    if config.get("instructions"):
-        lines.append(f"- **Instructions**: {config['instructions']}")
-    lines.append("")
-
-    meta = state["meta"]
-    lines.append("## Progress")
-    lines.append(f"- **Cluster version**: {meta['cluster_version']}")
-    lines.append(f"- **Texts sampled**: {meta['total_texts_sampled']}")
-    lines.append(f"- **Proposals**: {meta['total_proposals']}")
-    lines.append(f"- **Audits**: {meta['total_audits']}")
-    lines.append(f"- **Investigations**: {meta['total_investigations']}")
-    lines.append(f"- **Critiques**: {meta.get('total_critiques', 0)}")
-    lines.append("")
-
-    if state["clusters"]:
-        lines.append(f"## Clusters ({len(state['clusters'])})")
-        for c in state["clusters"]:
-            conf = c.get("confidence", "unaudited")
-            evidence = c.get("evidence", {})
-            audit_info = ""
-            if evidence.get("audit_assignments"):
-                audit_info = f" (N={evidence['audit_assignments']}, mean_conf={evidence.get('audit_mean_confidence', '?')})"
-            lines.append(f"- **{c['id']}**: {c['name']} [{conf}]{audit_info}")
-            lines.append(f"  {c['description']}")
-        lines.append("")
-
-    if meta.get("coverage") and isinstance(meta["coverage"], dict) and meta["coverage"].get("value") is not None:
-        cov = meta["coverage"]
-        lines.append("## Metrics")
-        pct = f"{cov['value']:.0%}" if isinstance(cov['value'], float) else str(cov['value'])
-        lines.append(f"- **Coverage**: ~{pct} (computed from N={cov['sample_size']} {cov.get('sample_method', 'random')} sample)")
-        if meta.get("mean_confidence") and isinstance(meta["mean_confidence"], dict) and meta["mean_confidence"].get("value") is not None:
-            mc = meta["mean_confidence"]
-            lines.append(f"- **Mean confidence**: {mc['value']:.1f} (N={mc['sample_size']})")
-        lines.append("")
-
-    if meta.get("cross_proposal_metrics") and isinstance(meta["cross_proposal_metrics"], dict):
-        cp = meta["cross_proposal_metrics"]
-        lines.append("## Cross-Proposal Agreement")
-        if cp.get("mean_ari") is not None:
-            lines.append(f"- **Mean ARI**: {cp['mean_ari']:.3f}")
-        if cp.get("overall_element_similarity") is not None:
-            lines.append(f"- **Element similarity**: {cp['overall_element_similarity']:.3f}")
-        if cp.get("n_inconsistent_texts") is not None:
-            lines.append(f"- **Inconsistent texts**: {cp['n_inconsistent_texts']} identified")
-        if cp.get("file"):
-            lines.append(f"- Full report: {cp['file']}")
-        lines.append("")
-
-    if meta.get("rejected_hypotheses"):
-        lines.append("## Rejected Hypotheses")
-        for rh in meta["rejected_hypotheses"]:
-            lines.append(f"- {rh['hypothesis']} -> {rh['finding']}")
-        lines.append("")
-
-    if meta.get("open_questions"):
-        lines.append("## Open Questions")
-        for q in meta["open_questions"]:
-            lines.append(f"- {q}")
-        lines.append("")
-
-    # Recent log entries
-    if LOG_PATH.exists():
-        log_lines = LOG_PATH.read_text(encoding="utf-8").strip().split("\n")
-        log_lines = [l for l in log_lines if l.strip()]
-        recent = log_lines[-5:] if len(log_lines) > 5 else log_lines
-        if recent:
-            lines.append("## Recent Actions")
-            for entry_str in recent:
-                try:
-                    entry = json.loads(entry_str)
-                    lines.append(f"- [{entry.get('timestamp', '?')}] {entry.get('action', '?')}: {entry.get('detail', '')}")
-                except json.JSONDecodeError:
-                    pass
-            lines.append("")
-
+    """Generate summary.md from current state. Layout lives in _summary.render_summary."""
+    content = render_summary(state, log_path=LOG_PATH)
     summary_path = WORKSPACE / "summary.md"
-    summary_path.write_text("\n".join(lines), encoding="utf-8")
+    summary_path.write_text(content, encoding="utf-8")
     print(f"summary.md updated ({len(state.get('clusters', []))} clusters)")
 
 
@@ -791,7 +702,11 @@ def cmd_update_cross_proposal_metrics(args):
         }
         save_state(state)
         generate_summary(state)
-        log_action("update-cross-proposal-metrics", f"ARI={mean_ari:.3f}, elem_sim={element_sim.get('overall', '?')}" if mean_ari is not None else "metrics stored")
+        ari_str = f"{mean_ari:.3f}" if mean_ari is not None else "n/a"
+        log_action(
+            "update-cross-proposal-metrics",
+            f"ARI={ari_str}, elem_sim={element_sim.get('overall', '?')}",
+        )
 
     cp = state["meta"]["cross_proposal_metrics"]
     print(f"Cross-proposal metrics stored (mean ARI={cp['mean_ari']}, element_similarity={cp['overall_element_similarity']})")
@@ -999,7 +914,7 @@ def cmd_finalize(args):
     total_examples = sum(len(c.get("example_texts", [])) for c in output["clusters"])
     print(f"Final taxonomy exported to {args.output}")
     print(f"Human-readable taxonomy: {taxonomy_path}")
-    print(f"Intermediate files archived to {archive_dir}/")
+    print(f"Intermediate files archived to {archive_dir}/ (tfidf_cache/ deleted — regenerates on demand)")
     print(f"  {len(output['clusters'])} clusters, {total_examples} example texts")
 
 
