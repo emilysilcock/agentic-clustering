@@ -119,7 +119,9 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/evaluate_prompt.py \
 ```
 
 Run variants in parallel where possible (each `classify.py` call is
-independent). Use the same model for all variants for fair comparison.
+independent). Use the same provider and model for all variants for fair
+comparison — provider changes prompt caching, schema enforcement, and
+tokenization, so swapping it mid-experiment confounds the accuracy diff.
 
 ### 5. Compare and recommend
 
@@ -143,12 +145,17 @@ Recommend the best, but explicitly flag:
 ### 6. Save the chosen prompt
 
 After the user confirms (or accepts the default recommendation), copy the
-winning prompt into the location `/cluster-classify` looks for. Use a
-Python one-liner so it works on both Git Bash and vanilla PowerShell —
-`cp` is not available in stock PowerShell:
+winning prompt into the location `/cluster-classify` looks for. Substitute
+`<chosen>` below with the variant name you recommended (e.g. `strict_focus`).
+Use a Python one-liner so it works on both Git Bash and vanilla PowerShell —
+`cp` is not available in stock PowerShell. Paths are passed as argv (not
+interpolated into the source string) so a space or quote in
+`$CLUSTERING_WORKSPACE` can't break the call:
 
 ```bash
-uv run python -c "import shutil; shutil.copy('$CLUSTERING_WORKSPACE/classification/tuning/prompt_${WINNER}.md', '$CLUSTERING_WORKSPACE/classification/tuned_prompt.md')"
+uv run python -c "import shutil, sys; shutil.copy(sys.argv[1], sys.argv[2])" \
+  "$CLUSTERING_WORKSPACE/classification/tuning/prompt_<chosen>.md" \
+  "$CLUSTERING_WORKSPACE/classification/tuned_prompt.md"
 ```
 
 `/cluster-classify` will pick up `tuned_prompt.md` automatically when present.

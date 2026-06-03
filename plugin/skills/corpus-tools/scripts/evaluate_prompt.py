@@ -108,8 +108,11 @@ def compute_metrics(labels: dict[str, str], preds: dict[str, str]) -> dict:
         "agree": agree,
         "disagree": len(disagreements),
         "accuracy": round(accuracy, 4),
-        "missing_labels": sorted(set(preds) - set(labels)),
-        "missing_predictions": sorted(set(labels) - set(preds)),
+        # Field names describe what the ids ARE, not what's missing — the
+        # earlier `missing_labels`/`missing_predictions` invited the reverse
+        # reading (i.e. "labels that are missing").
+        "predictions_without_labels": sorted(set(preds) - set(labels)),
+        "labels_without_predictions": sorted(set(labels) - set(preds)),
         "per_cluster": per_cluster,
         "disagreements": disagreements,
     }

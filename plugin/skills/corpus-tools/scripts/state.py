@@ -11,7 +11,6 @@ and recommendation application. All writes use file locking.
 
 import argparse
 import json
-import os
 import shutil
 import sys
 from datetime import datetime, timezone
@@ -32,25 +31,11 @@ from _audit_metrics import (
     confidence_label,
     normalize_confidence_scale,
 )
+from _log import append_log
 from _summary import render_summary
+from _workspace import get_workspace
 
-
-def _get_workspace() -> Path:
-    env_ws = os.environ.get("CLUSTERING_WORKSPACE")
-    if env_ws:
-        return Path(env_ws)
-    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
-    # subprocesses, so fall back to the pointer init.py writes at a fixed,
-    # project-root-relative location (hooks and tool calls share that cwd).
-    pointer = Path(".claude/clustering/.active_workspace")
-    if pointer.exists():
-        ws = pointer.read_text(encoding="utf-8").strip()
-        if ws:
-            return Path(ws)
-    return Path(".claude/clustering")
-
-
-WORKSPACE = _get_workspace()
+WORKSPACE = get_workspace()
 LOCK_PATH = WORKSPACE / ".state.lock"
 STATE_PATH = WORKSPACE / "state.json"
 LOG_PATH = WORKSPACE / "log.jsonl"
@@ -70,15 +55,7 @@ def save_state(state: dict):
 
 
 def log_action(action: str, detail: str, metadata: dict | None = None):
-    entry = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "action": action,
-        "detail": detail,
-    }
-    if metadata:
-        entry["metadata"] = metadata
-    with open(LOG_PATH, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    append_log(LOG_PATH, action, detail, metadata)
 
 
 def generate_summary(state: dict):
@@ -111,6 +88,30 @@ def cmd_set_clusters(args):
     if not clusters_input:
         print("Error: no clusters found in input file", file=sys.stderr)
         sys.exit(1)
+
+    # Pre-validate before taking the lock: every cluster must carry a non-empty
+    # `name` and `description`. Without this, `_normalize(c["name"])` below
+    # KeyErrors (or AttributeError, for a JSON null) mid-loop on a malformed
+    # synthesizer payload, after some `new_clusters` have already been built —
+    # the user sees a Python traceback instead of a surfaceable error and
+    # synthesizer.md step 11's "stop and surface the error" branch never fires.
+    # Mirrors Round 6's fail-loud guards on _apply_rename / _apply_remove.
+    for i, c in enumerate(clusters_input):
+        if not isinstance(c, dict):
+            print(f"Error: cluster {i} is not a JSON object", file=sys.stderr)
+            sys.exit(1)
+        name = c.get("name")
+        if not isinstance(name, str) or not name.strip():
+            print(f"Error: cluster {i} missing or empty 'name'", file=sys.stderr)
+            sys.exit(1)
+        desc = c.get("description")
+        if not isinstance(desc, str) or not desc.strip():
+            print(
+                f"Error: cluster {i} (name={name!r}) missing or empty "
+                "'description'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     lock = FileLock(str(LOCK_PATH))
     with lock:
@@ -238,10 +239,21 @@ def cmd_update_from_audit(args):
     with lock:
         state = load_state()
 
-        # Reject audits from a different cluster version
+        # Reject audits from a different (or unknown) cluster version. Missing
+        # field is also a hard reject: validate.py requires it, but this is
+        # defence-in-depth for audits that bypassed the hook (e.g. dropped
+        # directly into audits/ outside an agent turn).
         audit_version = audit.get("cluster_definitions_version")
         current_version = state["meta"]["cluster_version"]
-        if audit_version is not None and audit_version != current_version:
+        if audit_version is None:
+            print(
+                f"Error: audit is missing cluster_definitions_version. "
+                f"Cannot verify it targets the current cluster set (version "
+                f"{current_version}); refusing to apply.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if audit_version != current_version:
             print(
                 f"Error: audit was for cluster version {audit_version}, "
                 f"but current version is {current_version}. "
@@ -302,6 +314,7 @@ def cmd_update_from_audit(args):
         state["meta"]["mean_confidence"] = {
             "value": stats["mean_confidence"],
             "sample_size": stats["total"],
+            "sample_method": audit.get("sample_method", "random, exclude-seen"),
             "cluster_version": current_version,
         }
 
@@ -466,9 +479,33 @@ def _apply_split(state: dict, rec: dict):
     original_text_ids = list(
         original_cluster.get("evidence", {}).get("evidence_text_ids", [])
     )
-    assigned_ids: set[str] = set()
+
+    # Each parent text_id must appear in EXACTLY ONE bucket. The downstream
+    # missing / extras checks both use a set so an id claimed by two buckets
+    # would silently absorb to one. A duplicate-claimed text could even mask
+    # a genuinely missing one and pass the coverage check spuriously. Check
+    # overlap first so the error names the offending ids and buckets.
+    seen_buckets: dict[str, list[str]] = {}
     for split_def in split_into:
-        assigned_ids.update(split_def.get("example_text_ids", []))
+        bucket_name = split_def.get("name", "<unnamed>")
+        for tid in split_def.get("example_text_ids", []):
+            seen_buckets.setdefault(tid, []).append(bucket_name)
+    overlaps = {tid: buckets for tid, buckets in seen_buckets.items() if len(buckets) > 1}
+    if overlaps:
+        sample = ", ".join(
+            f"{tid!r}→[{', '.join(buckets)}]"
+            for tid, buckets in list(overlaps.items())[:10]
+        )
+        more = f" ... and {len(overlaps) - 10} more" if len(overlaps) > 10 else ""
+        print(
+            f"Error: split for '{original_id}' assigns {len(overlaps)} "
+            f"text_id(s) to multiple buckets — each parent text must land in "
+            f"exactly one bucket. Overlaps: {sample}{more}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    assigned_ids: set[str] = set(seen_buckets.keys())
     missing = [tid for tid in original_text_ids if tid not in assigned_ids]
     if missing:
         print(
@@ -479,6 +516,30 @@ def _apply_split(state: dict, rec: dict):
         )
         sys.exit(1)
 
+    # And the inverse: a bucket cannot smuggle in text_ids that weren't on the
+    # parent. An investigator that hallucinates ids would otherwise land them
+    # as evidence on the new clusters; downstream example-text enrichment then
+    # either silently drops them ("text not available") or pulls an unrelated
+    # text in by id collision.
+    extra = sorted(assigned_ids - set(original_text_ids))
+    if extra:
+        print(
+            f"Error: split for '{original_id}' has bucket text_ids not in the "
+            f"parent's evidence ({len(extra)} extras: "
+            f"{extra[:10]}{'...' if len(extra) > 10 else ''}). Buckets must "
+            f"redistribute parent texts, not add new ones.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Provenance carried by ALL split buckets, not just the first. The split
+    # is one source cluster becoming N — every resulting bucket traces back
+    # to the same proposal(s). Fresh shallow copy per bucket so a later edit
+    # to one bucket's provenance list doesn't leak across siblings.
+    parent_proposed_in = list(
+        original_cluster.get("evidence", {}).get("proposed_in", [])
+    )
+
     # First new cluster keeps the original ID. Replace its evidence_text_ids
     # with the first split's explicit bucket (no longer inherits the parent's
     # full list).
@@ -488,7 +549,7 @@ def _apply_split(state: dict, rec: dict):
     original_cluster["confidence"] = "unaudited"
     first_bucket = list(first_split.get("example_text_ids", []))
     original_cluster["evidence"] = {
-        "proposed_in": original_cluster.get("evidence", {}).get("proposed_in", []),
+        "proposed_in": list(parent_proposed_in),
         "evidence_text_ids": first_bucket,
         "audit_assignments": 0,
         "audit_mean_confidence": None,
@@ -506,7 +567,7 @@ def _apply_split(state: dict, rec: dict):
             "description": split_def["description"],
             "confidence": "unaudited",
             "evidence": {
-                "proposed_in": [],
+                "proposed_in": list(parent_proposed_in),
                 "evidence_text_ids": bucket,
                 "audit_assignments": 0,
                 "audit_mean_confidence": None,
@@ -530,14 +591,18 @@ def _apply_rename(state: dict, rec: dict):
         sys.exit(1)
 
     target_id = targets[0]
-    for cluster in state["clusters"]:
-        if cluster["id"] == target_id:
-            if rename_to.get("name"):
-                cluster["name"] = rename_to["name"]
-            if rename_to.get("description"):
-                cluster["description"] = rename_to["description"]
-            cluster["status"] = "modified"
-            break
+    target = next((c for c in state["clusters"] if c["id"] == target_id), None)
+    if target is None:
+        print(
+            f"Error: rename target cluster '{target_id}' not found in current clusters",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    if rename_to.get("name"):
+        target["name"] = rename_to["name"]
+    if rename_to.get("description"):
+        target["description"] = rename_to["description"]
+    target["status"] = "modified"
 
     state["meta"]["last_action"] = f"rename: {target_id}"
 
@@ -549,6 +614,7 @@ def _apply_add(state: dict, rec: dict):
         sys.exit(1)
 
     next_id = state["meta"]["next_cluster_id"]
+    example_ids = list(new_cluster_def.get("example_text_ids", []))
     new_cluster = {
         "id": f"c{next_id}",
         "name": new_cluster_def["name"],
@@ -556,10 +622,14 @@ def _apply_add(state: dict, rec: dict):
         "confidence": "unaudited",
         "evidence": {
             "proposed_in": [],
-            "evidence_text_ids": new_cluster_def.get("example_text_ids", []),
+            "evidence_text_ids": example_ids,
             "audit_assignments": 0,
             "audit_mean_confidence": None,
-            "total_texts_seen": 0,
+            # Match _apply_split's accounting: when an add carries explicit
+            # example_text_ids, those texts have been "seen" in the sense the
+            # counter tracks. Hardcoding 0 here disagreed with the populated
+            # evidence_text_ids on the same dict.
+            "total_texts_seen": len(example_ids),
         },
         "status": "new",
     }
@@ -572,6 +642,15 @@ def _apply_remove(state: dict, rec: dict):
     targets = rec.get("targets", [])
     if not targets:
         print("Error: remove requires targets", file=sys.stderr)
+        sys.exit(1)
+
+    existing_ids = {c["id"] for c in state["clusters"]}
+    missing = [t for t in targets if t not in existing_ids]
+    if missing:
+        print(
+            f"Error: remove target cluster(s) not found in current clusters: {missing}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     state["clusters"] = [c for c in state["clusters"] if c["id"] not in targets]
@@ -726,6 +805,13 @@ def cmd_mark_seen(args):
         seen.update(args.ids)
         with open(seen_path, "w", encoding="utf-8") as f:
             json.dump(sorted(seen), f)
+
+        sample_ids = list(args.ids)[:5]
+        more = "..." if len(args.ids) > 5 else ""
+        log_action(
+            "mark-seen",
+            f"{len(args.ids)} ids: {sample_ids}{more} (total seen: {len(seen)})",
+        )
 
     print(f"Marked {len(args.ids)} IDs as seen (total: {len(seen)})")
 
@@ -891,8 +977,15 @@ def cmd_finalize(args):
         if tfidf_dir.exists():
             shutil.rmtree(tfidf_dir)
 
-        # Loose files to archive (keep state.json, taxonomy.md, final_taxonomy.json, corpus.json)
+        # Loose files to archive. `seen_ids.json` stays so /cluster-label's
+        # subsequent sample.py calls don't re-pull discovery-audited texts.
+        # `log.jsonl` stays so its chronological trace keeps appending across
+        # phases (labelling, tuning, classification) instead of resetting at
+        # finalize. `plan.md` stays as the orchestrator's forward-looking
+        # notes so a re-finalize or follow-up session has the context (the
+        # backward-looking `run_log.md` and `summary.md` move into archive).
         keep_files = {"state.json", "taxonomy.md", "final_taxonomy.json", "corpus.json",
+                      "seen_ids.json", "log.jsonl", "plan.md",
                       ".state.lock", ".plugin_root", ".active_workspace"}
         # Keep `classification/` so a re-finalize after labelling/tuning/
         # classifying doesn't sweep labels.json, tuned_prompt.md, or the

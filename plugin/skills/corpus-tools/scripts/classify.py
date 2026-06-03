@@ -52,10 +52,14 @@ import asyncio
 import csv
 import json
 import os
-import re
 import time
 from pathlib import Path
 from typing import Any
+
+# Shared with build_classification_prompt.py via _taxonomy. Cluster-header
+# detection MUST agree across the two scripts — drift means the prompt the
+# model sees names a different set of ids than the schema enum it must produce.
+from _taxonomy import CLUSTER_HEADER_RE
 
 # Python's csv module defaults to a 131,072-char per-field cap. Mirror init.py:
 # opt out so long-body corpora don't trip the reader. Capped at 2**31-1
@@ -190,20 +194,18 @@ def _load_jsonl(path: Path, text_col: str, id_col: str | None) -> list[dict]:
 # Schema construction
 # ---------------------------------------------------------------------------
 
-_CLUSTER_HEADER_RE = re.compile(r"^##\s+.*\(`(c\d+)`\)")
-
-
 def extract_cluster_ids(prompt: str) -> list[str]:
     """Pull cluster IDs from `## Name (`cN`) [...]` lines in the prompt.
 
-    Requires the strict `(`cN`)` shape that build_classification_prompt.py uses
-    when it stamps headings; using a loose `\\`([^\\`]+)\\`` would happily pick
-    up backticked tokens inside cluster names (e.g. `## Use of `npm` commands`
-    → "npm") and yield a wrong schema enum that silently breaks every call.
+    The shared CLUSTER_HEADER_RE anchors on the backticked `(`cN`)` shape that
+    build_classification_prompt.py uses when it stamps headings; a loose
+    backtick-content regex would pick up other backticked tokens inside cluster
+    names (e.g. `## Use of `npm` commands` → "npm") and yield a wrong schema
+    enum that silently breaks every call.
     """
     ids = []
     for line in prompt.split("\n"):
-        m = _CLUSTER_HEADER_RE.match(line)
+        m = CLUSTER_HEADER_RE.match(line)
         if m:
             ids.append(m.group(1))
     return ids
@@ -248,6 +250,10 @@ async def classify_anthropic_async(
 
     async def one(rec: dict) -> None:
         async with sem:
+            # Split API-error and parse-error handling so a refusal / tool-only
+            # response (next() over an empty generator) yields a useful
+            # "ParseError: StopIteration: " message instead of a bare empty
+            # one. Mirrors the batch path's narrow-except below.
             try:
                 resp = await client.messages.create(
                     model=model,
@@ -262,6 +268,14 @@ async def classify_anthropic_async(
                         "format": {"type": "json_schema", "schema": schema},
                     },
                 )
+            except Exception as e:
+                results[rec["id"]] = {
+                    "cluster": None, "confidence": None, "reasoning": None,
+                    "error": f"{type(e).__name__}: {e}",
+                    "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                }
+                return
+            try:
                 text = next(b.text for b in resp.content if b.type == "text")
                 parsed = json.loads(text)
                 results[rec["id"]] = {
@@ -271,10 +285,10 @@ async def classify_anthropic_async(
                     "cache_read_tokens": resp.usage.cache_read_input_tokens,
                     "output_tokens": resp.usage.output_tokens,
                 }
-            except Exception as e:
+            except (StopIteration, json.JSONDecodeError, AttributeError) as e:
                 results[rec["id"]] = {
                     "cluster": None, "confidence": None, "reasoning": None,
-                    "error": f"{type(e).__name__}: {e}",
+                    "error": f"ParseError: {type(e).__name__}: {e}",
                     "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
                 }
 
@@ -301,14 +315,18 @@ ANTHROPIC_BATCH_MAX_BYTES = 200 * 1024 * 1024
 
 def _chunk_anthropic_requests(
     requests: list[dict], max_bytes: int, max_count: int,
-) -> list[list[dict]]:
+) -> tuple[list[list[dict]], list[int]]:
     """Group batch requests into chunks under both the byte and count caps.
+
+    Returns ``(chunks, chunk_bytes)`` — the per-chunk byte totals are returned
+    alongside so the caller can log sizes without re-encoding every request.
 
     Single requests that exceed max_bytes on their own are placed in their own
     chunk so the caller fails loudly on Anthropic's side rather than silently
     dropping them.
     """
     chunks: list[list[dict]] = []
+    chunk_bytes: list[int] = []
     current: list[dict] = []
     current_bytes = 0
     for req in requests:
@@ -317,27 +335,27 @@ def _chunk_anthropic_requests(
             current_bytes + req_bytes > max_bytes or len(current) >= max_count
         ):
             chunks.append(current)
+            chunk_bytes.append(current_bytes)
             current = []
             current_bytes = 0
         current.append(req)
         current_bytes += req_bytes
     if current:
         chunks.append(current)
-    return chunks
+        chunk_bytes.append(current_bytes)
+    return chunks, chunk_bytes
 
 
 async def _submit_and_collect_anthropic_batch(
     client,
     requests: list[dict],
     label: str,
-) -> tuple[dict[str, dict], set[str]]:
+) -> dict[str, dict]:
     """Submit one chunk of anthropic batch requests, poll, parse results.
 
-    Returns (results_by_custom_id, custom_ids_in_this_chunk). The custom_ids
-    set lets the caller mark missing ones as errors after the merge.
+    Returns results_by_custom_id. The caller marks ids missing from the merged
+    results across all chunks as errors.
     """
-    chunk_ids = {r["custom_id"] for r in requests}
-
     print(f"  [{label}] submitting {len(requests)} requests...", file=sys.stderr)
     batch = await client.messages.batches.create(requests=requests)
     print(f"  [{label}] batch id: {batch.id}", file=sys.stderr)
@@ -356,37 +374,61 @@ async def _submit_and_collect_anthropic_batch(
         await asyncio.sleep(60)
 
     results: dict[str, dict] = {}
-    async for r in await client.messages.batches.results(batch.id):
-        cid = getattr(r, "custom_id", None)
-        if cid is None:
-            print(f"warn: [{label}] anthropic batch result missing custom_id, skipping: {str(r)[:200]}", file=sys.stderr)
-            continue
-        if r.result.type == "succeeded":
-            try:
-                msg = r.result.message
-                text = next(blk.text for blk in msg.content if blk.type == "text")
-                parsed = json.loads(text)
-                results[cid] = {
-                    **parsed,
-                    "error": None,
-                    "input_tokens": msg.usage.input_tokens,
-                    "cache_read_tokens": msg.usage.cache_read_input_tokens,
-                    "output_tokens": msg.usage.output_tokens,
-                }
-            except (StopIteration, json.JSONDecodeError, AttributeError) as e:
+    # Wrap the result stream so a transient network blip or SDK quirk after the
+    # batch has already completed (and been billed) doesn't discard every
+    # record. Per-record parse errors are handled by the narrow-except inside
+    # the loop; this outer except catches the stream-level failure that would
+    # otherwise propagate out of asyncio.gather in the caller and lose the
+    # whole chunk. Any custom_id we hadn't seen yet gets a specific error
+    # string so the caller's "missing from batch results" safety net isn't the
+    # only signal the operator has.
+    try:
+        async for r in await client.messages.batches.results(batch.id):
+            cid = getattr(r, "custom_id", None)
+            if cid is None:
+                print(f"warn: [{label}] anthropic batch result missing custom_id, skipping: {str(r)[:200]}", file=sys.stderr)
+                continue
+            if r.result.type == "succeeded":
+                try:
+                    msg = r.result.message
+                    text = next(blk.text for blk in msg.content if blk.type == "text")
+                    parsed = json.loads(text)
+                    results[cid] = {
+                        **parsed,
+                        "error": None,
+                        "input_tokens": msg.usage.input_tokens,
+                        "cache_read_tokens": msg.usage.cache_read_input_tokens,
+                        "output_tokens": msg.usage.output_tokens,
+                    }
+                except (StopIteration, json.JSONDecodeError, AttributeError) as e:
+                    results[cid] = {
+                        "cluster": None, "confidence": None, "reasoning": None,
+                        "error": f"ParseError: {type(e).__name__}: {e}",
+                        "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                    }
+            else:
+                err = getattr(r.result, "error", r.result.type)
                 results[cid] = {
                     "cluster": None, "confidence": None, "reasoning": None,
-                    "error": f"ParseError: {type(e).__name__}: {e}",
+                    "error": str(err),
                     "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
                 }
-        else:
-            err = getattr(r.result, "error", r.result.type)
-            results[cid] = {
-                "cluster": None, "confidence": None, "reasoning": None,
-                "error": str(err),
-                "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
-            }
-    return results, chunk_ids
+    except Exception as e:
+        print(
+            f"  [{label}] stream-level batch results fetch failed after batch "
+            f"completed: {type(e).__name__}: {e}",
+            file=sys.stderr,
+        )
+        err_msg = f"BatchError: stream fetch failed: {type(e).__name__}: {e}"
+        for req in requests:
+            cid = req["custom_id"]
+            if cid not in results:
+                results[cid] = {
+                    "cluster": None, "confidence": None, "reasoning": None,
+                    "error": err_msg,
+                    "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                }
+    return results
 
 
 async def classify_anthropic_batch(
@@ -398,9 +440,11 @@ async def classify_anthropic_batch(
     """Anthropic Batch API path. ~50% discount on input + output, ≤24h SLA.
 
     Flow: build the request list → chunk it to fit Anthropic's caps (100k
-    requests / 256 MB input) → for each chunk, submit → poll → parse. Merge
-    per-chunk results. Chunks are processed sequentially to keep polling
-    output linear, matching the OpenAI batch path.
+    requests / 256 MB input) → submit all chunks concurrently → poll each →
+    parse → merge per-chunk results. Concurrent submission matters above
+    the per-batch cap: each batch has its own ≤24h SLA, so sequential
+    submission of N chunks stacks to N×24h worst-case. The `[chunk N/M]`
+    label on every progress line keeps interleaved logs parseable.
     """
     import anthropic
 
@@ -427,15 +471,13 @@ async def classify_anthropic_batch(
         for rec in records
     ]
 
-    # 2. Chunk to fit under Anthropic's caps.
-    chunks = _chunk_anthropic_requests(
+    # 2. Chunk to fit under Anthropic's caps. Byte totals come back with the
+    # chunks so the summary line doesn't have to re-encode every request.
+    chunks, chunk_bytes = _chunk_anthropic_requests(
         requests, ANTHROPIC_BATCH_MAX_BYTES, ANTHROPIC_BATCH_MAX_REQUESTS,
     )
     if len(chunks) > 1:
-        sizes_mb = [
-            sum(len(json.dumps(r, ensure_ascii=False).encode("utf-8")) for r in c) // (1024 * 1024)
-            for c in chunks
-        ]
+        sizes_mb = [b // (1024 * 1024) for b in chunk_bytes]
         chunk_summary = ", ".join(
             f"{len(c)}reqs/{s}MB" for c, s in zip(chunks, sizes_mb)
         )
@@ -447,14 +489,21 @@ async def classify_anthropic_batch(
             file=sys.stderr,
         )
 
-    # 3. Submit + collect each chunk in sequence.
+    # 3. Submit + collect every chunk concurrently. Each batch has its own
+    # ≤24h SLA, so sequential submission would stack to N×24h worst-case;
+    # gathering pipelines the waits. Per-chunk logs already carry their own
+    # `[chunk N/M]` prefix, so interleaved output stays parseable.
+    labels = [
+        f"chunk {i}/{len(chunks)}" if len(chunks) > 1 else "batch"
+        for i in range(1, len(chunks) + 1)
+    ]
+    chunk_results = await asyncio.gather(*(
+        _submit_and_collect_anthropic_batch(client, chunk, label)
+        for chunk, label in zip(chunks, labels)
+    ))
     results: dict[str, dict] = {}
-    seen_ids: set[str] = set()
-    for i, chunk in enumerate(chunks, start=1):
-        label = f"chunk {i}/{len(chunks)}" if len(chunks) > 1 else "batch"
-        chunk_results, chunk_ids = await _submit_and_collect_anthropic_batch(client, chunk, label)
-        results.update(chunk_results)
-        seen_ids |= chunk_ids
+    for cr in chunk_results:
+        results.update(cr)
 
     # 4. Any record we didn't see in batch results — mark missing.
     for rec in records:
@@ -545,42 +594,49 @@ async def classify_openai_async(
 OPENAI_BATCH_MAX_BYTES = 150 * 1024 * 1024
 
 
-def _chunk_jsonl_lines(lines: list[str], max_bytes: int) -> list[list[str]]:
+def _chunk_jsonl_lines(
+    lines: list[str], max_bytes: int,
+) -> tuple[list[list[str]], list[int]]:
     """Group JSONL lines into chunks each ≤ max_bytes (newline-inclusive).
+
+    Returns ``(chunks, chunk_bytes)`` — the per-chunk byte totals are returned
+    alongside so the caller can log sizes without re-encoding every line.
 
     Single lines that exceed max_bytes are placed in their own chunk so the
     caller fails loudly on OpenAI's upload rather than silently dropping them.
     """
     chunks: list[list[str]] = []
+    chunk_bytes: list[int] = []
     current: list[str] = []
     current_bytes = 0
     for line in lines:
         line_bytes = len(line.encode("utf-8")) + 1  # +1 for newline separator
         if current and current_bytes + line_bytes > max_bytes:
             chunks.append(current)
+            chunk_bytes.append(current_bytes)
             current = []
             current_bytes = 0
         current.append(line)
         current_bytes += line_bytes
     if current:
         chunks.append(current)
-    return chunks
+        chunk_bytes.append(current_bytes)
+    return chunks, chunk_bytes
 
 
 async def _submit_and_collect_openai_batch(
     client,
     lines: list[str],
     label: str,
-) -> tuple[dict[str, dict], set[str]]:
+) -> dict[str, dict]:
     """Upload one JSONL chunk, submit a batch, poll, return parsed results.
 
-    Returns (results_by_custom_id, custom_ids_in_this_chunk). The custom_ids
-    set lets the caller mark missing ones as errors after the merge.
+    Returns results_by_custom_id. The caller marks ids missing from the merged
+    results across all chunks as errors.
     """
     import io
 
     payload = ("\n".join(lines) + "\n").encode("utf-8")
-    chunk_ids = {json.loads(line)["custom_id"] for line in lines}
 
     print(
         f"  [{label}] uploading {len(lines)} requests, {len(payload):,} bytes...",
@@ -614,73 +670,106 @@ async def _submit_and_collect_openai_batch(
 
     results: dict[str, dict] = {}
 
+    # Both file fetches below are wrapped: a transient network blip or a
+    # malformed top-level JSONL line after the batch has already completed
+    # (and been billed) would otherwise propagate out of asyncio.gather in the
+    # caller and discard the whole chunk. Output-file failure fills missing
+    # custom_ids with a specific error; error-file failure just logs (it's
+    # supplementary — successful records are already in `results`, and any
+    # custom_id absent from both files is filled by the caller's safety net).
     if b.output_file_id:
-        out_content = await client.files.content(b.output_file_id)
-        raw = await out_content.aread() if hasattr(out_content, "aread") else out_content.read()
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            cid = entry.get("custom_id")
-            if cid is None:
-                print(f"warn: openai batch output entry missing custom_id, skipping: {str(entry)[:200]}", file=sys.stderr)
-                continue
-            response = entry.get("response") or {}
-            body = response.get("body") or {}
-            choices = body.get("choices") or []
-            if response.get("status_code") == 200 and choices:
-                text = choices[0].get("message", {}).get("content", "")
-                try:
-                    parsed = json.loads(text or "{}")
-                except json.JSONDecodeError as e:
-                    parsed = {"cluster": None, "confidence": None, "reasoning": None}
-                    err = f"JSONDecodeError: {e}"
+        try:
+            out_content = await client.files.content(b.output_file_id)
+            raw = await out_content.aread() if hasattr(out_content, "aread") else out_content.read()
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                cid = entry.get("custom_id")
+                if cid is None:
+                    print(f"warn: openai batch output entry missing custom_id, skipping: {str(entry)[:200]}", file=sys.stderr)
+                    continue
+                response = entry.get("response") or {}
+                body = response.get("body") or {}
+                choices = body.get("choices") or []
+                if response.get("status_code") == 200 and choices:
+                    text = choices[0].get("message", {}).get("content", "")
+                    try:
+                        parsed = json.loads(text or "{}")
+                    except json.JSONDecodeError as e:
+                        parsed = {"cluster": None, "confidence": None, "reasoning": None}
+                        err = f"JSONDecodeError: {e}"
+                    else:
+                        err = None
+                    usage = body.get("usage") or {}
+                    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
+                    # OpenAI's prompt_tokens is the TOTAL (cached + uncached); subtract
+                    # cached so input_tokens is the non-cached portion only (matches
+                    # the Anthropic semantic). Keeps downstream cost math correct.
+                    results[cid] = {
+                        **parsed,
+                        "error": err,
+                        "input_tokens": max(0, usage.get("prompt_tokens", 0) - cached),
+                        "cache_read_tokens": cached,
+                        "output_tokens": usage.get("completion_tokens", 0),
+                    }
                 else:
-                    err = None
-                usage = body.get("usage") or {}
-                cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0) or 0
-                # OpenAI's prompt_tokens is the TOTAL (cached + uncached); subtract
-                # cached so input_tokens is the non-cached portion only (matches
-                # the Anthropic semantic). Keeps downstream cost math correct.
-                results[cid] = {
-                    **parsed,
-                    "error": err,
-                    "input_tokens": max(0, usage.get("prompt_tokens", 0) - cached),
-                    "cache_read_tokens": cached,
-                    "output_tokens": usage.get("completion_tokens", 0),
-                }
-            else:
-                err_obj = entry.get("error") or response.get("error") or {"message": "non-200 response"}
-                results[cid] = {
-                    "cluster": None, "confidence": None, "reasoning": None,
-                    "error": f"BatchError: {err_obj}",
-                    "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
-                }
+                    err_obj = entry.get("error") or response.get("error") or {"message": "non-200 response"}
+                    results[cid] = {
+                        "cluster": None, "confidence": None, "reasoning": None,
+                        "error": f"BatchError: {err_obj}",
+                        "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                    }
+        except Exception as e:
+            print(
+                f"  [{label}] output file fetch/parse failed after batch "
+                f"completed: {type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
+            err_msg = f"BatchError: output fetch failed: {type(e).__name__}: {e}"
+            for raw_line in lines:
+                try:
+                    cid = json.loads(raw_line).get("custom_id")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if cid and cid not in results:
+                    results[cid] = {
+                        "cluster": None, "confidence": None, "reasoning": None,
+                        "error": err_msg,
+                        "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                    }
 
     if b.error_file_id:
-        err_content = await client.files.content(b.error_file_id)
-        raw = await err_content.aread() if hasattr(err_content, "aread") else err_content.read()
-        if isinstance(raw, bytes):
-            raw = raw.decode("utf-8")
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            entry = json.loads(line)
-            cid = entry.get("custom_id")
-            if cid is None:
-                print(f"warn: openai batch error entry missing custom_id, skipping: {str(entry)[:200]}", file=sys.stderr)
-                continue
-            results[cid] = {
-                "cluster": None, "confidence": None, "reasoning": None,
-                "error": f"BatchError: {entry.get('error') or entry}",
-                "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
-            }
+        try:
+            err_content = await client.files.content(b.error_file_id)
+            raw = await err_content.aread() if hasattr(err_content, "aread") else err_content.read()
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8")
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                cid = entry.get("custom_id")
+                if cid is None:
+                    print(f"warn: openai batch error entry missing custom_id, skipping: {str(entry)[:200]}", file=sys.stderr)
+                    continue
+                results[cid] = {
+                    "cluster": None, "confidence": None, "reasoning": None,
+                    "error": f"BatchError: {entry.get('error') or entry}",
+                    "input_tokens": 0, "cache_read_tokens": 0, "output_tokens": 0,
+                }
+        except Exception as e:
+            print(
+                f"  [{label}] error file fetch/parse failed: "
+                f"{type(e).__name__}: {e}",
+                file=sys.stderr,
+            )
 
-    return results, chunk_ids
+    return results
 
 
 async def classify_openai_batch(
@@ -691,9 +780,12 @@ async def classify_openai_batch(
 ) -> dict[str, dict]:
     """OpenAI Batch API path. 50% discount on input + output, ≤24h SLA.
 
-    Flow: build the JSONL → chunk it to fit OpenAI's 200 MB input cap → for
-    each chunk, upload → submit → poll → parse. Merge per-chunk results.
-    Chunks are processed sequentially to keep the polling output linear.
+    Flow: build the JSONL → chunk it to fit OpenAI's 200 MB input cap →
+    upload + submit all chunks concurrently → poll each → parse → merge
+    per-chunk results. Concurrent submission matters above the per-batch
+    cap: each batch has its own ≤24h SLA, so sequential submission of N
+    chunks stacks to N×24h worst-case. The `[chunk N/M]` label on every
+    progress line keeps interleaved logs parseable.
     """
     import openai
 
@@ -724,25 +816,32 @@ async def classify_openai_batch(
             "body": body,
         }, ensure_ascii=False))
 
-    # 2. Chunk to fit under the 200 MB OpenAI input-file cap.
-    chunks = _chunk_jsonl_lines(lines, OPENAI_BATCH_MAX_BYTES)
+    # 2. Chunk to fit under the 200 MB OpenAI input-file cap. Byte totals come
+    # back with the chunks so the summary line doesn't have to re-encode.
+    chunks, chunk_bytes = _chunk_jsonl_lines(lines, OPENAI_BATCH_MAX_BYTES)
     if len(chunks) > 1:
-        sizes = [sum(len(l.encode("utf-8")) + 1 for l in c) for c in chunks]
         print(
             f"  total payload exceeds {OPENAI_BATCH_MAX_BYTES // (1024*1024)} MB cap; "
             f"split into {len(chunks)} chunks "
-            f"({', '.join(f'{s // (1024*1024)}MB' for s in sizes)})",
+            f"({', '.join(f'{b // (1024*1024)}MB' for b in chunk_bytes)})",
             file=sys.stderr,
         )
 
-    # 3. Submit + collect each chunk in sequence.
+    # 3. Submit + collect every chunk concurrently. Each batch has its own
+    # ≤24h SLA, so sequential submission would stack to N×24h worst-case;
+    # gathering pipelines the waits. Per-chunk logs already carry their own
+    # `[chunk N/M]` prefix, so interleaved output stays parseable.
+    labels = [
+        f"chunk {i}/{len(chunks)}" if len(chunks) > 1 else "batch"
+        for i in range(1, len(chunks) + 1)
+    ]
+    chunk_results = await asyncio.gather(*(
+        _submit_and_collect_openai_batch(client, chunk, label)
+        for chunk, label in zip(chunks, labels)
+    ))
     results: dict[str, dict] = {}
-    seen_ids: set[str] = set()
-    for i, chunk in enumerate(chunks, start=1):
-        label = f"chunk {i}/{len(chunks)}" if len(chunks) > 1 else "batch"
-        chunk_results, chunk_ids = await _submit_and_collect_openai_batch(client, chunk, label)
-        results.update(chunk_results)
-        seen_ids |= chunk_ids
+    for cr in chunk_results:
+        results.update(cr)
 
     # 4. Any record we didn't see in either output or error files — mark missing.
     for rec in records:
@@ -829,7 +928,28 @@ def main() -> int:
             "build_classification_prompt.py --force-assign so the prompt agrees."
         ),
     )
+    p.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Allow --output to be overwritten if it exists. Default is to refuse "
+            "and exit so a re-run can't silently clobber a prior batch's results "
+            "(batch runs can be hours and not-free)."
+        ),
+    )
     args = p.parse_args()
+
+    # Refuse to clobber a prior output. Checked here — before any API call,
+    # corpus load, or key check — so the operator's fat-finger fails in
+    # milliseconds rather than after the batch completes.
+    output_path = Path(args.output)
+    if output_path.exists() and not args.overwrite:
+        print(
+            f"error: output already exists: {output_path}. Pass --overwrite "
+            "to replace it, or choose a different --output path.",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
         print("error: ANTHROPIC_API_KEY not set", file=sys.stderr)
@@ -873,7 +993,7 @@ def main() -> int:
         return 1
     elapsed = time.time() - t0
 
-    write_output(records, results, Path(args.output))
+    write_output(records, results, output_path)
     summarize(results)
     print(f"  elapsed: {elapsed:.1f}s", file=sys.stderr)
     print(f"  wrote {args.output}", file=sys.stderr)

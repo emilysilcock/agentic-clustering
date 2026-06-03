@@ -12,7 +12,6 @@ reporter cannot disagree with the live workspace state.
 """
 
 import json
-import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -31,24 +30,9 @@ from _audit_metrics import (
     confidence_label,
     normalize_confidence_scale,
 )
+from _workspace import get_workspace
 
-
-def _get_workspace() -> Path:
-    env_ws = os.environ.get("CLUSTERING_WORKSPACE")
-    if env_ws:
-        return Path(env_ws)
-    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
-    # subprocesses, so fall back to the pointer init.py writes at a fixed,
-    # project-root-relative location (hooks and tool calls share that cwd).
-    pointer = Path(".claude/clustering/.active_workspace")
-    if pointer.exists():
-        ws = pointer.read_text(encoding="utf-8").strip()
-        if ws:
-            return Path(ws)
-    return Path(".claude/clustering")
-
-
-WORKSPACE = _get_workspace()
+WORKSPACE = get_workspace()
 
 
 def load_state() -> dict:
@@ -70,13 +54,13 @@ def load_audits() -> list[dict]:
     return audits
 
 
-def compute_metrics():
+def main() -> int:
     state = load_state()
     audits = load_audits()
 
     if not audits:
         print("No audit data available yet.")
-        return
+        return 0
 
     # Aggregate assignments from audits matching the current cluster version.
     current_version = state["meta"]["cluster_version"]
@@ -89,7 +73,7 @@ def compute_metrics():
         print("No audit assignments for current cluster version.")
         print(f"Current cluster version: {current_version}")
         print(f"Total audit files: {len(audits)}")
-        return
+        return 0
 
     normalize_confidence_scale(all_assignments)
     stats = compute_assignment_stats(all_assignments)
@@ -131,6 +115,8 @@ def compute_metrics():
     if weak:
         print(f"\nWeak clusters (low confidence): {', '.join(weak)}")
 
+    return 0
+
 
 if __name__ == "__main__":
-    compute_metrics()
+    sys.exit(main())

@@ -14,7 +14,6 @@ rebuild doesn't block sampling.
 
 import argparse
 import json
-import os
 import pickle
 import sys
 from pathlib import Path
@@ -29,23 +28,9 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from filelock import FileLock
 
+from _workspace import get_workspace
 
-def _get_workspace() -> Path:
-    env_ws = os.environ.get("CLUSTERING_WORKSPACE")
-    if env_ws:
-        return Path(env_ws)
-    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
-    # subprocesses, so fall back to the pointer init.py writes at a fixed,
-    # project-root-relative location (hooks and tool calls share that cwd).
-    pointer = Path(".claude/clustering/.active_workspace")
-    if pointer.exists():
-        ws = pointer.read_text(encoding="utf-8").strip()
-        if ws:
-            return Path(ws)
-    return Path(".claude/clustering")
-
-
-WORKSPACE = _get_workspace()
+WORKSPACE = get_workspace()
 CACHE_DIR = WORKSPACE / "tfidf_cache"
 CACHE_LOCK_PATH = WORKSPACE / ".tfidf_cache.lock"
 
@@ -151,7 +136,7 @@ def search(query: str, n: int) -> list[dict]:
     return results
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="TF-IDF similarity search")
     parser.add_argument("--query", required=True, help="Search query")
     parser.add_argument("--n", type=int, default=10, help="Number of results")
@@ -159,7 +144,8 @@ def main():
 
     results = search(args.query, args.n)
     print(json.dumps(results, ensure_ascii=False, indent=2))
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -14,7 +14,6 @@ Exit codes:
 """
 
 import json
-import os
 import re
 import sys
 import tempfile
@@ -29,28 +28,18 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-def _get_workspace() -> Path:
-    env_ws = os.environ.get("CLUSTERING_WORKSPACE")
-    if env_ws:
-        return Path(env_ws)
-    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
-    # subprocesses, so fall back to the pointer init.py writes at a fixed,
-    # project-root-relative location (hooks and tool calls share that cwd).
-    pointer = Path(".claude/clustering/.active_workspace")
-    if pointer.exists():
-        ws = pointer.read_text(encoding="utf-8").strip()
-        if ws:
-            return Path(ws)
-    return Path(".claude/clustering")
+from _workspace import get_workspace
 
-
-WORKSPACE = _get_workspace()
+WORKSPACE = get_workspace()
 MAX_RETRIES = 3
 
 # Required keys per agent type (inferred from output directory)
 REQUIRED_KEYS = {
     "proposals": ["timestamp", "sample_size", "clusters"],
-    "audits": ["timestamp", "n_texts", "assignments", "summary"],
+    # cluster_definitions_version: state.py update-from-audit needs this to
+    # reject stale audits whose assignments target an older cluster set.
+    # Catching the omission here keeps the agent alive to fix it.
+    "audits": ["timestamp", "n_texts", "assignments", "summary", "cluster_definitions_version"],
     "investigations": ["timestamp"],  # investigations have varied formats
     "critiques": ["timestamp", "clusters_reviewed", "checklist", "issues", "overall_assessment"],
 }
@@ -195,6 +184,29 @@ def validate_file(file_path: str) -> tuple[bool, str]:
 
     # Determine agent type from directory
     parent_dir = path.parent.name
+
+    # synthesis_*_clusters.json files are set-clusters inputs (top-level
+    # "clusters" array), not reasoning artifacts — the companion reasoning
+    # file (no _clusters suffix) carries proposals_merged/clusters_produced.
+    # Skipped above REQUIRED_KEYS so they don't have to carry an artificial
+    # timestamp just to placate validation — their schema is enforced by
+    # state.py:cmd_set_clusters when it consumes them. Removes the implicit
+    # coupling to synthesizer.md's step-ordering (which file the hook sees
+    # as the "last Write target").
+    if parent_dir == "investigations" and path.name.endswith("_clusters.json"):
+        return True, ""
+
+    # Catch misrouted critique files: critics are supposed to write to
+    # critiques/, not investigations/. Without this guard, a critique_*.json
+    # dropped in investigations/ would pass the loose `["timestamp"]` schema
+    # there and the workflow would continue with the file in the wrong dir
+    # (where state.py apply-recommendation could try to act on it).
+    if parent_dir == "investigations" and path.name.startswith("critique_"):
+        return False, (
+            f"critique_*.json belongs in critiques/, not investigations/: "
+            f"{file_path}"
+        )
+
     required = REQUIRED_KEYS.get(parent_dir, [])
 
     # Check required keys

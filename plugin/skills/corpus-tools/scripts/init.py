@@ -16,11 +16,8 @@ import statistics
 import sys
 from pathlib import Path
 
-# Resolve sibling module — init.py is in the same `scripts/` directory as
-# `_summary.py`, but `uv run` may invoke us from any cwd. Add our own dir to
-# sys.path so the import works regardless.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _summary import render_summary  # noqa: E402
+from _log import append_log
+from _summary import render_summary
 
 # Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
 # non-ASCII cluster names / corpus content. Idempotent; no-op on streams that
@@ -137,7 +134,7 @@ def compute_stats(records: list[dict]) -> dict:
     }
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Initialize clustering workspace")
     parser.add_argument("--corpus", required=True, help="Path to corpus file (CSV, JSON, or JSONL)")
     parser.add_argument("--text-col", required=True, help="Column/field name containing text")
@@ -270,6 +267,7 @@ def main():
     print(f"  model_tier: {args.model_tier}")
     if args.instructions:
         print(f"  instructions: {args.instructions}")
+    return 0
 
 
 def _generate_summary(state: dict, workspace: Path):
@@ -282,17 +280,9 @@ def _generate_summary(state: dict, workspace: Path):
 
 
 def _log_action(workspace: Path, action: str, detail: str):
-    """Append an action to log.jsonl."""
-    from datetime import datetime, timezone
-    entry = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "action": action,
-        "detail": detail,
-    }
-    log_path = workspace / "log.jsonl"
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    """Append an action to log.jsonl. Thin wrapper around _log.append_log."""
+    append_log(workspace / "log.jsonl", action, detail)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

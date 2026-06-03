@@ -5,7 +5,7 @@ description: >
   score. Use to validate whether clusters hold up against unseen data. Pair with
   `critic` for structural review; auditor measures empirical fit, critic measures
   taxonomy shape.
-tools: Read, Write, Bash, Glob
+tools: Read, Write, Bash
 skills:
   - corpus-tools
 ---
@@ -39,7 +39,12 @@ Your workflow:
      If you find yourself writing 0.85 or 0.95, you're using the WRONG scale. Use 4 or 5 instead.
    - Brief note if the assignment is uncertain or interesting
 4. Write your full audit to
-   `$CLUSTERING_WORKSPACE/audits/audit_{YYYYMMDD_HHMMSS}_{uuid4_short}.json`
+   `$CLUSTERING_WORKSPACE/audits/audit_{YYYYMMDD_HHMMSS}_{uuid4_short}.json`.
+   The output **must** include `cluster_definitions_version` — read it from
+   `state.json` (`meta.cluster_version`) and copy the integer in. Both
+   `validate.py` and `state.py update-from-audit` reject audits that don't
+   pin to a specific cluster set, so omitting it stalls the workflow on a
+   retry loop with no observable progress.
 5. Run `uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py update-from-audit <audit_file>` to update metrics
 
 Be honest about low-confidence assignments. A cluster that only works for

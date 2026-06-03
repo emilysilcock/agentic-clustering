@@ -26,8 +26,11 @@ fi
 3. **Dispatch a final auditor** to refresh coverage and per-cluster confidence
    against the *current* cluster set. Without this, `taxonomy.md`'s header
    numbers reflect whatever the last audit said, which may have been for an
-   older cluster version. Use a comfortable sample (60–150 fresh texts,
-   depending on text length).
+   older cluster version. Use the same chars-per-text bracket as cluster-run's
+   audit guidance (200-400 short, 50-150 medium, 20-50 long). One headline-
+   stability override: for long-text corpora (500+ chars avg), push toward
+   the high end of that range and don't drop below ~50 — the published
+   coverage/confidence numbers shouldn't ride on a 20-text sample.
 4. Spawn the **critic** for a final adversarial review of the (now freshly-
    audited) cluster set.
 5. Report critic findings — ask user to proceed or address issues
@@ -42,7 +45,11 @@ fi
 8. Confirm the workspace is clean: after finalization, the workspace root
    contains the output artifacts (`taxonomy.md`, `final_taxonomy.json`),
    `state.json`, `corpus.json` (kept so `/cluster-label` can still sample the
-   original corpus), the internal `.state.lock` / `.plugin_root` /
+   original corpus), `seen_ids.json` (kept so `/cluster-label` skips
+   discovery-audited texts), `log.jsonl` (kept so the chronological trace
+   keeps appending across phases), `plan.md` (kept as the orchestrator's
+   forward-looking notes so a re-finalize or follow-up session has the
+   context), the internal `.state.lock` / `.plugin_root` /
    `.active_workspace` files, and an `archive/` directory holding all
-   intermediate files (proposals, audits, investigations, critiques, metrics,
-   logs, and the final `summary.md`).
+   intermediate files (proposals, audits, investigations, critiques,
+   metrics, `run_log.md`, and the final `summary.md`).

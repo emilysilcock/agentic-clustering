@@ -3,7 +3,7 @@ name: proposer
 description: >
   Reads sampled texts and proposes natural cluster groupings. Use when new
   hypotheses are needed — initial exploration or investigating uncovered regions.
-tools: Read, Write, Bash, Glob
+tools: Read, Write, Bash
 skills:
   - corpus-tools
 ---

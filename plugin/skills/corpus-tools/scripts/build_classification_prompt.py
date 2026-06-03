@@ -18,7 +18,6 @@ classifier at call time, not by the prompt.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -30,12 +29,10 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-
-# A cluster header looks like:  ## Some Name (`c12`) [high]
-# Matching the backticked cluster id makes this an unambiguous boundary, so a
-# stray "---" divider or "## " line *inside* an example text can't be mistaken
-# for the end of an examples block.
-CLUSTER_HEADER_RE = re.compile(r"^##\s+.*\(`c\d+`\)")
+# Shared with classify.py via _taxonomy. Cluster-header detection MUST agree
+# across the two scripts — drift means the prompt the model sees names a
+# different set of ids than the schema enum it must produce.
+from _taxonomy import CLUSTER_HEADER_RE
 
 
 DEFAULT_HEADER = """\

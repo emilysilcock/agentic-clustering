@@ -16,8 +16,8 @@ fi
 Read and display `$CLUSTERING_WORKSPACE/summary.md`. If it doesn't exist, tell
 the user the workspace hasn't been initialized and suggest `/cluster-run`.
 
-Also show a brief action history from the last 5 entries in
-`$CLUSTERING_WORKSPACE/log.jsonl`.
+`summary.md` already includes a "Recent Actions" tail sourced from
+`log.jsonl`, so no separate dump of that file is needed.
 
 If `$CLUSTERING_WORKSPACE/run_log.md` exists, show the last few entries from it
 as well — this gives the user a chronological trace of agent dispatches and

@@ -11,10 +11,8 @@ Uses file locking for atomic seen-ID tracking under concurrent access.
 
 import argparse
 import json
-import os
 import random
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 # Force UTF-8 on stdout/stderr — Windows defaults to cp1252 and crashes on
@@ -27,23 +25,10 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from filelock import FileLock
 
+from _log import append_log
+from _workspace import get_workspace
 
-def _get_workspace() -> Path:
-    env_ws = os.environ.get("CLUSTERING_WORKSPACE")
-    if env_ws:
-        return Path(env_ws)
-    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
-    # subprocesses, so fall back to the pointer init.py writes at a fixed,
-    # project-root-relative location (hooks and tool calls share that cwd).
-    pointer = Path(".claude/clustering/.active_workspace")
-    if pointer.exists():
-        ws = pointer.read_text(encoding="utf-8").strip()
-        if ws:
-            return Path(ws)
-    return Path(".claude/clustering")
-
-
-WORKSPACE = _get_workspace()
+WORKSPACE = get_workspace()
 LOCK_PATH = WORKSPACE / ".state.lock"
 
 
@@ -81,15 +66,8 @@ def update_sampled_count(n: int):
 
 
 def log_sample(detail: str):
-    """Append a sample event to log.jsonl (same shape as init.py / state.py)."""
-    log_path = WORKSPACE / "log.jsonl"
-    entry = {
-        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "action": "sample",
-        "detail": detail,
-    }
-    with open(log_path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    """Append a sample event to log.jsonl. Thin wrapper around _log.append_log."""
+    append_log(WORKSPACE / "log.jsonl", "sample", detail)
 
 
 def sample_random(corpus: list[dict], n: int, include_seen: bool) -> list[dict]:

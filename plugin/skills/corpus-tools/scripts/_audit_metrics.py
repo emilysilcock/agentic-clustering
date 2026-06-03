@@ -32,37 +32,116 @@ CONFIDENCE_LABEL_THRESHOLDS = ((4.0, "high"), (3.0, "medium"))
 
 
 def normalize_confidence_scale(assignments: list[dict], *, warn: bool = True) -> bool:
-    """If the assignments look like 0-1 floats, rescale to 1-5 in place.
-    Returns True if normalisation was applied.
+    """Normalise an audit's confidences to the integer 1-5 contract, in place.
 
-    The auditor agent is instructed to emit integer 1-5, but models sometimes
-    drift to 0-1 floats. The trigger is "at least one non-integer value AND
-    every non-null value ≤ 1.0" — the non-integer requirement is what
-    distinguishes a genuine 0-1 audit (which will contain values like 0.85)
-    from a legitimate all-1 integer audit (where every text was a forced guess).
-    The old max-only heuristic inflated the all-1 case to all-5 and made a
-    terrible audit look perfect.
+    The auditor prompt requires INTEGER 1-5. Models occasionally drift; this
+    helper detects each realistic drift mode and rescues it, clamping the rest
+    so downstream code can rely on the contract. Returns True iff any value
+    was changed.
+
+    Scale-detection rules (evaluated in this order):
+
+    1. **All-1 integers** — left alone. The audit's signal IS that every
+       assignment is a forced guess on the 1-5 scale; rescaling ×5 here
+       would silently invert the audit's meaning. (Round 2 #7 fix; the
+       reason this whole function exists in its current shape.)
+    2. **0-1 floats with at least one fractional value** (e.g., 0.85, 0.4) —
+       rescale ×5, round, clamp to [1, 5]. The classic model-drift case.
+    3. **Binary 0/1 integers** (mix of 0 and 1, no fractions, NOT all-1) —
+       rescale ×5 and clamp, so 0 → 1 (the minimum valid 1-5) and 1 → 5.
+       Distinguished from rule 1 by the presence of any non-1 value.
+    4. **All-zero audit** — degenerate; clamp each to 1 with a warning. A 0
+       on the 1-5 scale is invalid, so passing the values through unchanged
+       would leak invalid confidences into downstream metrics.
+    5. **Integer 1-5 in range** — left alone (the happy path).
+    6. **Out-of-range or non-integer values >1** (e.g., 7, 3.5, -0.5) —
+       round and clamp to [1, 5] with a warning. Defensive; the auditor
+       shouldn't emit these but we'd rather repair than crash.
+    7. **Non-numeric confidences** — warn and leave the audit untouched
+       (we can't repair what we can't read; downstream will catch it).
     """
-    confs = [a["confidence"] for a in assignments if a.get("confidence") is not None]
-    if not confs or max(confs) > 1.0:
+    # Coerce + collect; abort if anything is non-numeric.
+    try:
+        values = [
+            float(a["confidence"])
+            for a in assignments
+            if a.get("confidence") is not None
+        ]
+    except (TypeError, ValueError):
+        if warn:
+            # Re-iterate to find which assignments couldn't be coerced so the
+            # operator has a starting point for debugging. Only runs on the
+            # error path, so the happy-path cost is unchanged.
+            bad_ids: list[str] = []
+            for a in assignments:
+                c = a.get("confidence")
+                if c is None:
+                    continue
+                try:
+                    float(c)
+                except (TypeError, ValueError):
+                    bad_ids.append(str(a.get("text_id", "<no text_id>")))
+            preview = ", ".join(bad_ids[:5])
+            if len(bad_ids) > 5:
+                preview += f" (+ {len(bad_ids) - 5} more)"
+            print(
+                f"WARNING: non-numeric confidence in audit ({len(bad_ids)} "
+                f"assignment(s): {preview}); leaving as-is.",
+                file=sys.stderr,
+            )
         return False
-    # Require at least one fractional value before treating as 0-1 scale.
-    # A genuine 0-1 audit will have values like 0.4, 0.85, etc.; an all-1
-    # integer audit (all forced guesses) will have only 1s and must be left
-    # alone.
-    has_fraction = any(float(c) != int(float(c)) for c in confs)
-    if not has_fraction:
+    if not values:
         return False
-    if warn:
-        print(
-            "WARNING: detected 0-1 float confidence scale in audit assignments. "
-            "Normalising to 1-5 integer scale (multiply by 5).",
-            file=sys.stderr,
+    max_val = max(values)
+    min_val = min(values)
+
+    def _warn(msg: str) -> None:
+        if warn:
+            print(f"WARNING: {msg}", file=sys.stderr)
+
+    def _rescale_and_clamp(scale: float) -> bool:
+        for a in assignments:
+            c = a.get("confidence")
+            if c is not None:
+                a["confidence"] = max(1, min(5, int(round(c * scale))))
+        return True
+
+    if max_val <= 1.0:
+        has_fraction = any(v != int(v) for v in values)
+        if has_fraction:
+            _warn("detected 0-1 float confidence scale; rescaling to integer 1-5")
+            return _rescale_and_clamp(5.0)
+        # From here down, all values are integers with max <= 1. Match the
+        # specific shapes explicitly — falling through "anything else" would
+        # silently accept pathological inputs like [-1, -1, -1] or [-1, 0, 1].
+        if min_val == 1 and max_val == 1:
+            # All-1 integers — Round 2 preserves this case.
+            return False
+        if min_val == 0 and max_val == 1:
+            _warn("detected binary 0/1 confidence scale; rescaling to integer 1-5")
+            return _rescale_and_clamp(5.0)
+        if min_val == 0 and max_val == 0:
+            _warn("all-zero confidence audit; clamping each value to 1")
+            for a in assignments:
+                if a.get("confidence") is not None:
+                    a["confidence"] = 1
+            return True
+        # Anything left has negative values (max <= 1, integer, and not one
+        # of the well-formed shapes above). Clamp into [1, 5] defensively.
+        _warn(
+            "non-positive confidence values detected; clamping each into [1, 5]"
         )
-    for a in assignments:
-        if a.get("confidence") is not None:
-            a["confidence"] = int(round(a["confidence"] * 5))
-    return True
+        return _rescale_and_clamp(1.0)
+
+    # max_val > 1.0 — expected integer 1-5 scale. Clamp anything out of range
+    # or non-integer.
+    if any(v < 1 or v > 5 or v != int(v) for v in values):
+        _warn(
+            "confidence values outside integer 1-5 range; rounding and "
+            "clamping to [1, 5]"
+        )
+        return _rescale_and_clamp(1.0)
+    return False
 
 
 def compute_assignment_stats(assignments: list[dict]) -> dict:

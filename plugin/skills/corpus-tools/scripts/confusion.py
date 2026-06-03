@@ -13,7 +13,6 @@ human-readable summary for the orchestrator.
 import argparse
 import json
 import math
-import os
 import sys
 from datetime import datetime, timezone
 from itertools import combinations
@@ -28,22 +27,9 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
-def _get_workspace() -> Path:
-    env_ws = os.environ.get("CLUSTERING_WORKSPACE")
-    if env_ws:
-        return Path(env_ws)
-    # CLUSTERING_WORKSPACE does not survive across Bash tool calls or reach hook
-    # subprocesses, so fall back to the pointer init.py writes at a fixed,
-    # project-root-relative location (hooks and tool calls share that cwd).
-    pointer = Path(".claude/clustering/.active_workspace")
-    if pointer.exists():
-        ws = pointer.read_text(encoding="utf-8").strip()
-        if ws:
-            return Path(ws)
-    return Path(".claude/clustering")
+from _workspace import get_workspace
 
-
-WORKSPACE = _get_workspace()
+WORKSPACE = get_workspace()
 PROPOSALS_DIR = WORKSPACE / "proposals"
 METRICS_DIR = WORKSPACE / "metrics"
 
@@ -282,8 +268,13 @@ def _load_proposals() -> dict[str, dict]:
         return {}
     proposals = {}
     for path in sorted(PROPOSALS_DIR.glob("*.json")):
+        # Key by relative-to-PROPOSALS_DIR path, not just `path.name`. Today
+        # the glob is flat so the two coincide, but if the glob ever becomes
+        # recursive (`**/*.json`) the relative-path form disambiguates
+        # proposals with the same leaf filename across subdirs.
+        key = str(path.relative_to(PROPOSALS_DIR))
         with open(path, encoding="utf-8") as f:
-            proposals[path.name] = json.load(f)
+            proposals[key] = json.load(f)
     return proposals
 
 
@@ -368,6 +359,9 @@ def cmd_cross_proposal(args):
         ari_values.append(pw["ari"])
         print(f"  {a} vs {b}: ARI={pw['ari']:.3f} ({label}), NMI={pw['nmi']:.3f}, "
               f"agreement={pw['agreement_rate']:.0%} ({pw['common_texts']} common texts)")
+    if ari_values:
+        mean_ari = sum(ari_values) / len(ari_values)
+        print(f"  Mean ARI: {mean_ari:.3f} ({_ari_label(mean_ari)})")
     print()
 
     # High-entropy clusters
@@ -437,7 +431,7 @@ def cmd_element_similarity(args):
     # element-similarity stays summary-only to keep stdout compact.
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description="Cross-proposal agreement analysis")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -458,7 +452,8 @@ def main():
         "element-similarity": cmd_element_similarity,
     }
     commands[args.command](args)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

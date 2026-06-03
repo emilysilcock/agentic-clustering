@@ -5,7 +5,7 @@ description: >
   granularity problems, unclear boundaries. The critic's job is to find
   what's wrong. Complementary to `auditor`; critic reviews structure
   (overlap/gaps/descriptions), auditor measures per-text fit.
-tools: Read, Write, Bash, Glob, Grep
+tools: Read, Write, Bash, Grep
 skills:
   - corpus-tools
 ---

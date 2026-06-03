@@ -42,6 +42,12 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/init.py \
 If `config.max_texts_per_sample` is set in state.json, `sample.py` automatically
 caps `--n` to that value (with a stderr note).
 
+`--seed N` makes the draw reproducible; if omitted, `sample.py` auto-generates
+a seed and records it in `log.jsonl` so the draw is reproducible after the
+fact. The `targeted` and `--ids` strategies are deterministic given inputs,
+so the seed doesn't affect their outcome — but it's still logged for uniform
+provenance.
+
 ```bash
 # Random sample (default: excludes previously seen texts)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py --n 50

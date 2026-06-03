@@ -89,6 +89,8 @@ saving). Confirm before submitting.
 
 ### 5. Run classification
 
+Small-corpus / quick-turnaround run (async with concurrency cap):
+
 ```bash
 RUN_NAME=run_$(date -u +%Y%m%dT%H%M%SZ)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
@@ -100,7 +102,10 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
   --mode async --concurrency 20
 ```
 
-Substitute the prompt path with `tuned_prompt.md` when present.
+For large-corpus runs (the default above ~1000 texts), swap
+`--mode async --concurrency 20` for `--mode batch` — same script, ~50%
+cheaper, ≤24h SLA. Substitute the prompt path with `tuned_prompt.md` when
+present.
 
 ### 6. Report
 

@@ -4,7 +4,7 @@ description: >
   Merges multiple cluster proposals into a unified cluster set through reasoning.
   Reads full proposal files, finds overlapping themes, resolves conflicts, and
   produces a coherent initial cluster set. Use after 2+ proposals are ready.
-tools: Read, Write, Bash, Glob
+tools: Read, Write, Bash
 skills:
   - corpus-tools
 ---
