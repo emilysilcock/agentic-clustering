@@ -59,7 +59,12 @@ def load_corpus(corpus_path: str, text_col: str, id_col: str | None = None) -> l
 
 def _load_csv(path: Path, text_col: str, id_col: str | None) -> list[dict]:
     records = []
-    with open(path, newline="", encoding="utf-8") as f:
+    # utf-8-sig tolerates a leading BOM. PowerShell 5.1 writes BOM by
+    # default with `Set-Content -Encoding utf8`; without it csv.DictReader's
+    # first column header would be `﻿text` instead of `text` and the
+    # text-column lookup below would fail with a confusing "column not
+    # found" error.
+    with open(path, newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         fields = reader.fieldnames or []
         if text_col not in fields:
@@ -75,7 +80,8 @@ def _load_csv(path: Path, text_col: str, id_col: str | None) -> list[dict]:
 
 
 def _load_json(path: Path, text_col: str, id_col: str | None) -> list[dict]:
-    with open(path, encoding="utf-8") as f:
+    # utf-8-sig tolerates a leading BOM (PowerShell 5.1 quirk).
+    with open(path, encoding="utf-8-sig") as f:
         data = json.load(f)
     if not isinstance(data, list):
         print("Error: JSON file must contain a list of objects or strings", file=sys.stderr)
@@ -98,7 +104,8 @@ def _load_jsonl(path: Path, text_col: str, id_col: str | None) -> list[dict]:
     layout in benchmarking/data_processing/."""
     lookup_id = id_col or "id"
     records = []
-    with open(path, encoding="utf-8") as f:
+    # utf-8-sig tolerates a leading BOM (PowerShell 5.1 quirk).
+    with open(path, encoding="utf-8-sig") as f:
         for i, line in enumerate(f):
             line = line.strip()
             if not line:
