@@ -301,3 +301,16 @@ This preserves all evidence, audit data, and text IDs.
 - User says stop → stop
 - All clusters high confidence, coverage > 85%, critic satisfied → suggest finalize
 - Last 2-3 actions improved nothing → suggest finalize (diminishing returns)
+
+## When something goes wrong
+
+If an agent dispatch fails repeatedly, a script exits non-zero in a way you
+can't explain, or the user expresses real dissatisfaction with how the run
+is going, ask once: *"Want me to file a GitHub issue with the context
+attached?"* On yes, invoke `/cluster-report-issue` (or call
+`$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/report_issue.py` directly).
+
+Don't ask for trivial recoverable errors — a single retry, an expected
+`validate.py` rejection that the next dispatch will fix, or anything you
+can repair yourself. Reserve the offer for situations where you would
+otherwise have to tell the user "I'm stuck."

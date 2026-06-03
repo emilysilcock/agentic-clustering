@@ -949,6 +949,39 @@ def cmd_finalize(args):
         taxonomy_path = WORKSPACE / "taxonomy.md"
         taxonomy_path.write_text("\n".join(taxonomy_lines), encoding="utf-8")
 
+        # Emit categories.json — the canonical input for the text-classification
+        # plugin's classify-run / classify-tune / classify-label skills. The
+        # shape is `[{id, name, description}, ...]`. We deliberately omit
+        # `example_texts` here: classify-time prompts shouldn't carry examples
+        # (they cost tokens at every call, can prime the model, and were
+        # already stripped at the old build_classification_prompt.py boundary).
+        # A `"none"` entry is appended by default so the classifier can mark
+        # out-of-scope texts; pass --no-none-category to forbid that (the
+        # implicit "force-assign" mode — classify.py's behaviour is driven by
+        # what's in this file, not by a separate flag).
+        categories_out = [
+            {
+                "id": c["id"],
+                "name": c["name"],
+                "description": c["description"],
+            }
+            for c in output["clusters"]
+        ]
+        if not getattr(args, "no_none_category", False):
+            categories_out.append({
+                "id": "none",
+                "name": "Out of scope",
+                "description": (
+                    "Text does not fit any of the categories above. Use when the "
+                    "text is genuinely outside the taxonomy, not just a poor fit."
+                ),
+            })
+        categories_path = WORKSPACE / "categories.json"
+        categories_path.write_text(
+            json.dumps(categories_out, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
         # Regenerate summary.md from the freshly-saved state BEFORE archiving,
         # so the archived summary matches the state.json snapshot we ship
         # alongside the taxonomy. (cmd_finalize doesn't otherwise call
@@ -977,19 +1010,23 @@ def cmd_finalize(args):
         if tfidf_dir.exists():
             shutil.rmtree(tfidf_dir)
 
-        # Loose files to archive. `seen_ids.json` stays so /cluster-label's
-        # subsequent sample.py calls don't re-pull discovery-audited texts.
-        # `log.jsonl` stays so its chronological trace keeps appending across
-        # phases (labelling, tuning, classification) instead of resetting at
-        # finalize. `plan.md` stays as the orchestrator's forward-looking
-        # notes so a re-finalize or follow-up session has the context (the
-        # backward-looking `run_log.md` and `summary.md` move into archive).
-        keep_files = {"state.json", "taxonomy.md", "final_taxonomy.json", "corpus.json",
+        # Loose files to archive. `seen_ids.json` stays as a record of what
+        # was discovery-audited so a re-finalize can draw fresh unseen
+        # samples. `log.jsonl` stays so its chronological trace keeps
+        # appending across phases (labelling, tuning, classification —
+        # handled by the text-classification plugin downstream) instead of
+        # resetting at finalize. `plan.md` stays as the orchestrator's
+        # forward-looking notes so a re-finalize or follow-up session has
+        # the context (the backward-looking `run_log.md` and `summary.md`
+        # move into archive).
+        keep_files = {"state.json", "taxonomy.md", "final_taxonomy.json",
+                      "categories.json", "corpus.json",
                       "seen_ids.json", "log.jsonl", "plan.md",
                       ".state.lock", ".plugin_root", ".active_workspace"}
         # Keep `classification/` so a re-finalize after labelling/tuning/
-        # classifying doesn't sweep labels.json, tuned_prompt.md, or the
-        # timestamped run_*.csv outputs into the archive.
+        # classifying doesn't sweep labels.json, header.md, or the
+        # timestamped run_*.csv outputs (written by the text-classification
+        # plugin's classify skills) into the archive.
         keep_dirs = {"archive", "classification"}
         for item in WORKSPACE.iterdir():
             if item.is_file() and item.name not in keep_files:
@@ -1007,6 +1044,7 @@ def cmd_finalize(args):
     total_examples = sum(len(c.get("example_texts", [])) for c in output["clusters"])
     print(f"Final taxonomy exported to {args.output}")
     print(f"Human-readable taxonomy: {taxonomy_path}")
+    print(f"Categories for text-classification: {categories_path} ({len(categories_out)} entries)")
     print(f"Intermediate files archived to {archive_dir}/ (tfidf_cache/ deleted — regenerates on demand)")
     print(f"  {len(output['clusters'])} clusters, {total_examples} example texts")
 
@@ -1056,6 +1094,17 @@ def main():
     fin.add_argument("--output", required=True, help="Output file path")
     fin.add_argument("--max-examples", type=int, default=5,
                      help="Max example texts per cluster in output (default: 5)")
+    fin.add_argument(
+        "--no-none-category",
+        action="store_true",
+        help=(
+            "Omit the `'none'` (out-of-scope) entry from categories.json. "
+            "Use when every text in the downstream corpus is in-scope and "
+            "must be assigned to a real cluster — text-classification's "
+            "classify.py infers force-assign semantics from the absence "
+            "of a `'none'` id in categories.json."
+        ),
+    )
 
     args = parser.parse_args()
 

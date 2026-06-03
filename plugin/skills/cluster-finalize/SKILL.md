@@ -2,9 +2,9 @@
 name: cluster-finalize
 description: >
   Wrap up a clustering session: dispatch a final auditor + critic, then export
-  the finalized taxonomy (taxonomy.md + final_taxonomy.json) and archive
-  intermediate proposals/audits/investigations/critiques. Use when the user
-  is done iterating and wants the deliverable artifacts.
+  the finalized taxonomy (taxonomy.md + final_taxonomy.json + categories.json)
+  and archive intermediate proposals/audits/investigations/critiques. Use
+  when the user is done iterating and wants the deliverable artifacts.
 allowed-tools: Task, Read, Bash, Write
 ---
 
@@ -39,17 +39,39 @@ fi
    uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
      finalize --output $CLUSTERING_WORKSPACE/final_taxonomy.json --max-examples 5
    ```
+   This also writes `$CLUSTERING_WORKSPACE/categories.json` — the canonical
+   input for the **text-classification** plugin's `/classify-run`,
+   `/classify-tune`, and `/classify-label` commands. By default it includes
+   a `"none"` (out-of-scope) entry; pass `--no-none-category` to
+   `state.py finalize` if every text in the downstream corpus must be
+   assigned to a real cluster.
 7. Display `$CLUSTERING_WORKSPACE/taxonomy.md` to the user — this is the
-   primary human-readable artifact. The JSON (`final_taxonomy.json`) is for
-   programmatic use.
-8. Confirm the workspace is clean: after finalization, the workspace root
-   contains the output artifacts (`taxonomy.md`, `final_taxonomy.json`),
-   `state.json`, `corpus.json` (kept so `/cluster-label` can still sample the
-   original corpus), `seen_ids.json` (kept so `/cluster-label` skips
-   discovery-audited texts), `log.jsonl` (kept so the chronological trace
+   primary human-readable artifact. `final_taxonomy.json` is for
+   programmatic use; `categories.json` is for the classify commands.
+8. Tell the user the phase-2 commands are available: `/classify-label`,
+   `/classify-tune`, `/classify-run` — they pick up `categories.json`
+   automatically because text-classification is installed as a hard
+   dependency of this plugin and its workspace auto-detection sees
+   `.claude/clustering/categories.json`.
+9. Confirm the workspace is clean: after finalization, the workspace root
+   contains the output artifacts (`taxonomy.md`, `final_taxonomy.json`,
+   `categories.json`), `state.json`, `corpus.json` (kept as a reference for
+   the original corpus and for re-finalize sessions), `seen_ids.json`
+   (kept as a record of what was discovery-audited so a re-finalize can
+   draw fresh unseen samples), `log.jsonl` (kept so the chronological trace
    keeps appending across phases), `plan.md` (kept as the orchestrator's
    forward-looking notes so a re-finalize or follow-up session has the
    context), the internal `.state.lock` / `.plugin_root` /
    `.active_workspace` files, and an `archive/` directory holding all
    intermediate files (proposals, audits, investigations, critiques,
    metrics, `run_log.md`, and the final `summary.md`).
+
+## When something goes wrong
+
+If `state.py finalize` fails, the final auditor or critic returns
+malformed output, or the user is unhappy with the taxonomy that came out,
+ask once whether to file a GitHub issue with the workspace context
+attached. On yes, invoke `/cluster-report-issue` (or call
+`$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/report_issue.py`
+directly). Reserve this for things you can't fix locally — don't offer for
+a critic that flags an issue the user can simply address by iterating.

@@ -9,25 +9,27 @@ The workflow has two phases:
 
 ## Prerequisites
 
-**For discovery and labelling** (`/cluster-run`, `/cluster-status`, `/cluster-investigate`, `/cluster-finalize`, `/cluster-label`):
+**For discovery** (`/cluster-run`, `/cluster-status`, `/cluster-investigate`, `/cluster-finalize`):
 
 - **[`uv`](https://docs.astral.sh/uv/)** — the skill scripts run via `uv run` and resolve their own dependencies (PEP 723), so no manual `pip install` is needed.
 
-**For classification and tuning** (`/cluster-classify`, `/cluster-tune`): everything above, **plus** an API key —
+**For classification, labelling, and tuning** (`/classify-run`, `/classify-tune`, `/classify-label`): everything above, **plus** an API key —
 
 - `OPENAI_API_KEY` (default — uses GPT-5-mini, cheap and fast), **or**
 - `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5).
 
+The classify commands come from the **[`text-classification`](https://github.com/emilysilcock/text-classification)** plugin, which is installed automatically as a hard dependency of this plugin — you don't need to install it separately.
 
 ## Installation
 
-Clone this repo and point Claude Code at the `plugin/` directory:
+Through Claude Code's marketplace mechanism. From a directory you trust:
 
-```text
-claude --plugin-dir /path/to/agentic-clustering/plugin
+```
+/plugin marketplace add emilysilcock/econ-nlp-plugins
+/plugin install agentic-clustering@econ-nlp-plugins
 ```
 
-The plugin loads for the current session; repeat the flag on subsequent launches or symlink it into your Claude Code plugin directory.
+This auto-installs `text-classification` alongside it.
 
 ## Quick start
 
@@ -36,35 +38,40 @@ The plugin loads for the current session; repeat the flag on subsequent launches
 1. **`/cluster-run`** — point it at your corpus (a CSV/JSON file + the text column). It asks for a target cluster-count range, optional clustering instructions (e.g. *"cluster by issue type"*, *"group by sentiment"*), and a model tier. It then runs an iterative loop of specialised agents (proposer → synthesizer → auditor → investigator → critic), writing all working state to `.claude/clustering/`.
 2. **`/cluster-status`** — check progress at any time (cluster count, coverage, confidence, cross-proposal agreement).
 3. **`/cluster-investigate`** — dig into a specific cluster or question (the orchestrator also does this automatically; use this to steer it).
-4. **`/cluster-finalize`** — runs a final auditor + critic review and exports the taxonomy:
+4. **`/cluster-finalize`** — runs a final auditor + critic review and exports:
    - `taxonomy.md` — the human-readable taxonomy
    - `final_taxonomy.json` — the same, for programmatic use
+   - `categories.json` — the structured category definitions consumed by the classify commands below
 
 ### Phase 2 — Classify your corpus
 
-5. **`/cluster-classify`** — applies the finalized `taxonomy.md` to a corpus, classifying **every** text into a cluster (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/classifications/`. Pick an execution mode:
+5. **`/classify-run`** — applies the finalized `categories.json` to a corpus, classifying **every** text into a category (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/classifications/`. Pick an execution mode:
    - **`async`** — real-time, for small corpora (< ~1000 texts).
    - **`batch`** — the provider's Batch API: **~50% cheaper**, takes minutes–hours, best for full-corpus runs.
 
    Prompt caching is on by default, so cost drops sharply after the first call.
 
    **Optional — tune accuracy first.** Before a full classification run, you can validate and improve the classifier against hand labels:
-   - **`/cluster-label`** — walks you through a sample of texts one at a time; you assign each a cluster (or `none`). Produces a `labels.json` validation set.
-   - **`/cluster-tune`** — generates several prompt variants, scores each against your labels, and recommends the best one (`tuned_prompt.md`). `/cluster-classify` picks it up automatically on the next run.
+   - **`/classify-label`** — walks you through a sample of texts one at a time; you assign each a category (or `none`). Produces a `labels.json` validation set.
+   - **`/classify-tune`** — generates several prompt-header variants, scores each against your labels, and recommends the best one (saved as `classification/header.md`). `/classify-run` picks it up automatically on the next run.
+
+   The classify commands auto-detect this workspace via `.claude/clustering/categories.json`, so no extra configuration is needed when you've just run `/cluster-finalize`.
 
 ## Commands at a glance
 
-| Command | Phase | What it does |
-|---|---|---|
-| `/cluster-run` | discover | Iterative agentic discovery of clusters |
-| `/cluster-status` | discover | Show progress on the current workspace |
-| `/cluster-investigate` | discover | Investigate a specific cluster or question |
-| `/cluster-finalize` | discover | Final review + export `taxonomy.md` / `final_taxonomy.json` |
-| `/cluster-label` | tune | Hand-label a validation sample → `labels.json` |
-| `/cluster-tune` | tune | Tune the classification prompt against labels |
-| `/cluster-classify` | classify | Classify a corpus into the taxonomy → CSV |
+| Command | Phase | What it does | From |
+|---|---|---|---|
+| `/cluster-run` | discover | Iterative agentic discovery of clusters | this plugin |
+| `/cluster-status` | discover | Show progress on the current workspace | this plugin |
+| `/cluster-investigate` | discover | Investigate a specific cluster or question | this plugin |
+| `/cluster-finalize` | discover | Final review + export `taxonomy.md` / `final_taxonomy.json` / `categories.json` | this plugin |
+| `/cluster-report-issue` | any | File a GitHub issue against agentic-clustering with workspace context | this plugin |
+| `/classify-label` | tune | Hand-label a validation sample → `labels.json` | text-classification |
+| `/classify-tune` | tune | Tune the classification prompt against labels | text-classification |
+| `/classify-run` | classify | Classify a corpus into the taxonomy → CSV | text-classification |
+| `/classify-report-issue` | any | File a GitHub issue against text-classification | text-classification |
 
-Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-run`, etc.
+Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-run` or `/text-classification:classify-run`, etc.
 
 ## Where things live
 
@@ -80,16 +87,34 @@ Whether or not you use a custom workspace, two tiny pointer files (`.plugin_root
 
 **After `/cluster-finalize`** — the workspace root is cleaned up:
 
-- `taxonomy.md` / `final_taxonomy.json` — the finalized taxonomy
-- `state.json`, `corpus.json` — kept for `/cluster-label` and future re-finalize
-- `seen_ids.json`, `log.jsonl` — kept so `/cluster-label` doesn't re-sample discovery-audited texts, and the action trace keeps appending across phases
+- `taxonomy.md` / `final_taxonomy.json` / `categories.json` — the finalized taxonomy and the category definitions consumed by `/classify-*`
+- `state.json`, `corpus.json` — kept as a reference for the original corpus and for re-finalize sessions
+- `seen_ids.json`, `log.jsonl` — kept as a record of discovery-audited texts (so a re-finalize can draw fresh unseen samples) and so the action trace keeps appending across phases
 - `plan.md` — kept as the orchestrator's forward-looking notes, available to a re-finalize or follow-up session
 - `archive/` — every mid-discovery artifact above (proposals, audits, investigations, critiques, metrics, `summary.md`, `run_log.md`) moved here so the root stays clean
 
-**Phase-2 outputs** (created by `/cluster-label`, `/cluster-tune`, `/cluster-classify`; preserved across `/cluster-finalize`):
+**Phase-2 outputs** (created by the text-classification plugin's `/classify-label`, `/classify-tune`, `/classify-run`; preserved across `/cluster-finalize`):
 
-- `classification/labels.json`, `classification/tuned_prompt.md` — labelling and tuning artifacts
+- `classification/labels.json` — hand labels from `/classify-label`
+- `classification/header.md` — tuned classifier prompt header from `/classify-tune` (auto-picked up by `/classify-run`)
 - `classification/classifications/run_*.csv` — classification outputs (one timestamped file per run)
+- `classification/tuning/` — per-variant intermediate outputs from `/classify-tune`
+
+## Reporting issues
+
+If something goes wrong during a `/cluster-*` run, the orchestrator will
+offer to file a GitHub issue for you. You can also invoke
+**`/cluster-report-issue`** any time — it asks for a one-line title and a
+short description, then attaches the workspace context (plugin commit,
+`summary.md` tail, `log.jsonl` tail, and a `state.json` metrics snapshot)
+and files the issue on `emilysilcock/agentic-clustering`. Raw corpus text
+is never auto-attached.
+
+If you have the [GitHub CLI](https://cli.github.com/) (`gh`) installed and
+authenticated, the issue is filed directly and you get the issue URL back.
+Otherwise the command prints a pre-filled
+`github.com/.../issues/new?title=...&body=...` URL — open it in a browser
+and click submit.
 
 ## How it works
 
