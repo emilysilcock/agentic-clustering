@@ -173,3 +173,14 @@ uv run python -c "import shutil, sys; shutil.copy(sys.argv[1], sys.argv[2])" \
 - **Cost** — N variants × M labels = N×M classifier calls per tuning run.
   With caching this is cheap, but warn the user if running > 4 variants on
   > 200 labels.
+
+## When something goes wrong
+
+If `evaluate_prompt.py` or `labels_to_corpus.py` fails in a way you can't
+explain, or the tuning sweep produces accuracy numbers that look obviously
+broken (e.g. every variant at 0% or 100% on a balanced label set), ask the
+user once whether to file a GitHub issue with the workspace context
+attached. On yes, invoke `/cluster-report-issue` (or call
+`$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/report_issue.py` directly).
+Don't offer for an honest no-improvement-over-baseline result — that's a
+real outcome, not a bug.

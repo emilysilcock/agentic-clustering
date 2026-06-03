@@ -53,3 +53,13 @@ fi
    `.active_workspace` files, and an `archive/` directory holding all
    intermediate files (proposals, audits, investigations, critiques,
    metrics, `run_log.md`, and the final `summary.md`).
+
+## When something goes wrong
+
+If `state.py finalize` fails, the final auditor or critic returns
+malformed output, or the user is unhappy with the taxonomy that came out,
+ask once whether to file a GitHub issue with the workspace context
+attached. On yes, invoke `/cluster-report-issue` (or call
+`$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/report_issue.py`
+directly). Reserve this for things you can't fix locally — don't offer for
+a critic that flags an issue the user can simply address by iterating.

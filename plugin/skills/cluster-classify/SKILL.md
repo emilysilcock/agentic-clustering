@@ -135,3 +135,14 @@ Show a small sample (first 10 rows) so the user can sanity-check labels.
   has no out-of-scope handling.
 - **Re-runs are non-destructive** — each run gets its own timestamped output
   file under `classifications/`. Don't overwrite prior runs.
+
+## When something goes wrong
+
+If `classify.py` exits with errors you can't diagnose (auth failures aside —
+those are the user's to fix), the provider returns malformed structured
+output repeatedly, or batch retrieval hangs / fails, ask the user once
+whether to file a GitHub issue with the workspace context attached. On yes,
+invoke `/cluster-report-issue` (or call
+`$CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/report_issue.py` directly).
+Skip the offer for missing API keys, unsupported file formats, or anything
+the error message itself tells the user how to fix.

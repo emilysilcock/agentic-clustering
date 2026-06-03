@@ -63,6 +63,7 @@ The plugin loads for the current session; repeat the flag on subsequent launches
 | `/cluster-label` | tune | Hand-label a validation sample → `labels.json` |
 | `/cluster-tune` | tune | Tune the classification prompt against labels |
 | `/cluster-classify` | classify | Classify a corpus into the taxonomy → CSV |
+| `/cluster-report-issue` | any | File a GitHub issue with workspace context attached |
 
 Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-run`, etc.
 
@@ -90,6 +91,22 @@ Whether or not you use a custom workspace, two tiny pointer files (`.plugin_root
 
 - `classification/labels.json`, `classification/tuned_prompt.md` — labelling and tuning artifacts
 - `classification/classifications/run_*.csv` — classification outputs (one timestamped file per run)
+
+## Reporting issues
+
+If something goes wrong during a `/cluster-*` run, the orchestrator will
+offer to file a GitHub issue for you. You can also invoke
+**`/cluster-report-issue`** any time — it asks for a one-line title and a
+short description, then attaches the workspace context (plugin commit,
+`summary.md` tail, `log.jsonl` tail, and a `state.json` metrics snapshot)
+and files the issue on `emilysilcock/agentic-clustering`. Raw corpus text
+is never auto-attached.
+
+If you have the [GitHub CLI](https://cli.github.com/) (`gh`) installed and
+authenticated, the issue is filed directly and you get the issue URL back.
+Otherwise the command prints a pre-filled
+`github.com/.../issues/new?title=...&body=...` URL — open it in a browser
+and click submit.
 
 ## How it works
 
