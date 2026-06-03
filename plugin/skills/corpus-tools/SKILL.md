@@ -164,56 +164,18 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
   update-cross-proposal-metrics .claude/clustering/metrics/<file>.json
 ```
 
-## Classification
+## Classification — handled by the text-classification plugin
 
-After `cluster-finalize` produces `taxonomy.md`, the classification stage
-applies the taxonomy to a corpus.
+After `cluster-finalize` produces `taxonomy.md` and `categories.json`,
+classification, labelling, and prompt tuning happen via the
+[text-classification](https://github.com/emilysilcock/text-classification)
+plugin, which is installed automatically as a hard dependency of this
+plugin. Its skills (`/classify-run`, `/classify-tune`, `/classify-label`,
+`/classify-report-issue`) auto-detect this workspace by probing for
+`.claude/clustering/categories.json`, so no manual configuration is
+needed — finalize finishes and the classify commands "just work".
 
-```bash
-# Build the classification system prompt from taxonomy.md
-# (strips example texts; wraps cluster definitions with classifier instructions)
-uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/build_classification_prompt.py \
-  --taxonomy $CLUSTERING_WORKSPACE/taxonomy.md \
-  --output   $CLUSTERING_WORKSPACE/classification/prompt.md
-# Optional: --header <path> to override the default header
-# Optional: --keep-examples to keep the **Examples:** blocks
-
-# Classify a corpus. Supports openai (default, gpt-5-mini) and anthropic.
-# Mode `batch` is ~50% cheaper but takes ≤24h. Implemented for both providers
-# (Anthropic Messages Batches API; OpenAI Batch API, auto-chunked under the
-# 200 MB input cap).
-uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/classify.py \
-  --input <corpus.csv|json|jsonl> --text-col <text_col> --id-col <id_col> \
-  --prompt $CLUSTERING_WORKSPACE/classification/prompt.md \
-  --output $CLUSTERING_WORKSPACE/classification/classifications/<run>.csv \
-  --provider openai --model gpt-5-mini \
-  --mode async --concurrency 20
-# Requires OPENAI_API_KEY (or ANTHROPIC_API_KEY for --provider anthropic).
-# Prompt caching is on by default — verify via the cache_read_tokens column.
-# OpenAI caches automatically once the cacheable prefix is ≥1024 tokens.
-# Anthropic Haiku 4.5 needs ≥~4096 tokens to cache; small-k taxonomies don't qualify.
-# Structured outputs guarantee the cluster field comes from the taxonomy's IDs.
-# A missing --id-col errors out (not silent row-index fallback); pass --no-id
-# explicitly for corpora without an ID column.
-# --force-assign (must be set on BOTH classify.py and build_classification_prompt.py)
-# drops "none" from the schema enum so every text gets a real cluster — for
-# datasets with no out-of-scope class.
-
-# Convert labels.json (from /cluster-label) to a {id, text} corpus for
-# classify.py. Used by /cluster-tune.
-uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/labels_to_corpus.py \
-  --labels $CLUSTERING_WORKSPACE/classification/labels.json \
-  --corpus $CLUSTERING_WORKSPACE/corpus.json \
-  --output $CLUSTERING_WORKSPACE/classification/tuning/labelled_corpus.json
-# --corpus is the workspace's corpus.json — supplies text bodies when
-# labels.json was written in the dict shape (no text per entry).
-
-# Evaluate predictions against human labels
-uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/evaluate_prompt.py \
-  --predictions <classifications.csv> \
-  --labels      $CLUSTERING_WORKSPACE/classification/labels.json \
-  --output      <eval.json>
-# Output: accuracy, per-cluster precision/recall/F1, disagreement list, written
-# to --output (no stdout dump). Labels JSON accepts {id: cluster} or
-# [{"id": ..., "cluster": ...}, ...].
-```
+Anything you used to do via `/cluster-classify`, `/cluster-tune`, or
+`/cluster-label` is now done by the corresponding `/classify-*` command;
+the underlying file layout is unchanged (everything still lands under
+`<workspace>/classification/`).

@@ -9,5 +9,6 @@
   },
   "repository": "https://github.com/emilysilcock/agentic-clustering",
   "license": "MIT",
-  "keywords": ["clustering", "nlp", "text-analysis", "agentic"]
+  "keywords": ["clustering", "nlp", "text-analysis", "agentic"],
+  "dependencies": ["text-classification"]
 }
