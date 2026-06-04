@@ -73,6 +73,98 @@ This auto-installs `text-classification` alongside it.
 
 Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-run` or `/text-classification:classify-run`, etc.
 
+## Try it out — a worked example
+
+A small corpus you can run end-to-end in a few minutes to see the workflow in action. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"* — the canonical Gallup MIP item — and falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
+
+### 1. Save the corpus
+
+Save the following as `mip_responses.csv` in any directory you trust:
+
+```csv
+id,text
+1,"Wages haven't kept up with the cost of groceries and rent for years."
+2,"I can barely afford gas and basic bills, prices keep climbing."
+3,"Good jobs are disappearing from my town and nothing is replacing them."
+4,"Inflation is eating away at every paycheck I bring home."
+5,"Young people can't afford houses anymore, the economy is broken."
+6,"Stagnant wages and rising prices, that's what's killing the middle class."
+7,"Insurance premiums keep going up and the coverage keeps getting worse."
+8,"I had to skip my medication last month because I couldn't afford it."
+9,"Hospital bills are bankrupting families even with so-called good insurance."
+10,"Prescription drug prices in this country are completely out of control."
+11,"My doctor's appointment took six months to schedule, the system is overwhelmed."
+12,"Mental health care is impossible to access unless you're wealthy."
+13,"The wildfires near my home get worse every single year now."
+14,"We're not doing anything serious about climate change before it's too late."
+15,"Water quality where I live has been deteriorating for a decade."
+16,"Extreme weather keeps destroying communities and we just rebuild and wait for the next one."
+17,"Air pollution near the highways is making my kids sick."
+18,"Future generations will inherit a planet we made unlivable, and we know it."
+```
+
+### 2. Discover the taxonomy
+
+In a Claude Code session opened in the directory containing `mip_responses.csv`:
+
+```
+/cluster-run
+```
+
+The orchestrator will ask a handful of questions. For this run, use:
+
+| Question | Answer |
+|---|---|
+| Where should the clustering workspace live? | *(press enter for the default)* |
+| Corpus path | `mip_responses.csv` |
+| Text column name | `text` |
+| Target cluster count range | `2 6` |
+| Clustering instructions | `cluster by the type of problem the respondent describes` |
+| Model tier | `quality` |
+
+The run typically completes in 2–4 minutes. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence on this corpus.
+
+Use **`/cluster-status`** at any time to peek at the live numbers.
+
+### 3. Finalize the taxonomy
+
+```
+/cluster-finalize
+```
+
+This dispatches a final auditor + critic, then exports three artifacts in the workspace (`./clustering/` by default):
+
+- `taxonomy.md` — the human-readable taxonomy with a short description and example texts per cluster
+- `final_taxonomy.json` — the same content, structured
+- `categories.json` — the cluster definitions consumed by the classify commands
+
+`taxonomy.md` will look something like:
+
+```markdown
+# Cluster Taxonomy
+
+## c1 — Economic hardship
+Concerns about wages, prices, housing affordability, and job availability …
+
+## c2 — Healthcare access and cost
+Difficulty affording insurance, prescriptions, and timely medical care …
+
+## c3 — Climate and environmental decline
+Worsening wildfires, extreme weather, pollution, and long-term climate risk …
+```
+
+### 4. Classify the corpus into the taxonomy
+
+With an API key set (`OPENAI_API_KEY` for GPT-5-mini, or `ANTHROPIC_API_KEY` for Haiku 4.5):
+
+```
+/classify-run
+```
+
+It auto-detects `clustering/categories.json` from the step above, so you only need to confirm the corpus path (`mip_responses.csv`) and text column (`text`). Pick **`async`** mode — the corpus is tiny. The output is a timestamped CSV under `clustering/classification/classifications/run_<timestamp>.csv` with one row per text: the assigned cluster id, the cluster name, a confidence score, and the model's reasoning. On this corpus you should see all 18 texts land in `c1`/`c2`/`c3` matching the obvious theme.
+
+That's the full discover → finalize → classify loop. Swap in your own corpus and instructions to use it for real.
+
 ## Where things live
 
 All state is written to `.claude/clustering/` in the project you're analysing (override by setting `CLUSTERING_WORKSPACE` before launching Claude Code, or by answering `/cluster-run`'s "where should the workspace live?" prompt with a custom path).
