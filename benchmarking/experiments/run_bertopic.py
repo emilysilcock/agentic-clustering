@@ -158,13 +158,20 @@ def run_one(dataset_name: str, seed: int, embedding_model: str, variants: tuple[
     k_in_scope = int(ds_meta["k_in_scope"])
     rows: list[dict] = []
     if "given_k" in variants:
+        # BERTopic's `nr_topics` counts the special outlier topic (-1) toward
+        # the target — so passing `nr_topics=K` yields K-1 real topics plus
+        # one outlier topic. To get K real topics for apples-to-apples
+        # comparison with k-means / SBERT+kmeans / LLM-embedding+kmeans (all
+        # of which produce exactly K clusters), pass K+1. Note this is a
+        # no-op when HDBSCAN's natural output is already ≤K (e.g.
+        # StackExchange) — the reduce step can only merge topics, never split.
         rows.append(
             _run_one_variant(
                 method=METHOD_GIVEN_K,
                 dataset_name=dataset_name,
                 seed=seed,
                 embedding_model=embedding_model,
-                nr_topics=k_in_scope,
+                nr_topics=k_in_scope + 1,
                 k_in_scope=k_in_scope,
             )
         )
