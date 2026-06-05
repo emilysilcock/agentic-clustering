@@ -17,6 +17,8 @@ class CostAccumulator:
     output_tokens: int = 0
     usd: float = 0.0
     wall_clock_s: float = 0.0
+    subscription_usd: float = 0.0
+    api_usd: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)

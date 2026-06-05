@@ -97,6 +97,14 @@ def call_claude(
     headless session can load the plugin and dispatch Task subagents.
     """
     waits = 0
+    # Windows' CreateProcess caps the full command line at ~32 KB (Unicode
+    # API); long prompts trip ``FileNotFoundError: [WinError 206] The
+    # filename or extension is too long``. Above 8 KB we pipe the prompt
+    # through stdin (``claude -p`` reads it from stdin when no positional
+    # argument is given) so the cmdline stays short regardless of prompt
+    # size. The threshold is a conservative cap below the ~30 KB Windows
+    # ceiling — leaves headroom for the model/flag args.
+    prompt_via_stdin = len(prompt) > 8000
     cmd = [
         "claude",
         "-p",
@@ -104,13 +112,16 @@ def call_claude(
         model,
         "--no-session-persistence",
         *(extra_args or []),
-        prompt,
     ]
+    if not prompt_via_stdin:
+        cmd.append(prompt)
+    stdin_input = prompt if prompt_via_stdin else None
 
     while True:
         try:
             proc = subprocess.run(
                 cmd,
+                input=stdin_input,
                 capture_output=True,
                 text=True,
                 timeout=timeout_s,
@@ -127,6 +138,7 @@ def call_claude(
             try:
                 proc = subprocess.run(
                     cmd,
+                    input=stdin_input,
                     capture_output=True,
                     text=True,
                     timeout=timeout_s,
