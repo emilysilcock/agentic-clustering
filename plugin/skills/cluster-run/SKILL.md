@@ -174,6 +174,12 @@ At each step:
    - Audit shows weak clusters → **investigate** the weak ones
    - Audit shows unclustered patterns → **investigate** unclustered region
    - Haven't critiqued after major changes → **critique**
+   - Critic flagged structural issues (overlap, gaps, granularity, boundary
+     confusion) with concrete evidence → **investigate** the flagged clusters
+   - About to suggest finalize → glance back at the most recent audit's
+     `weak_clusters` and the most recent critique's open issues; if anything
+     concrete remains unaddressed, an Investigator pass is usually cheaper
+     than shipping the issue
    - Everything looks solid → suggest **finalizing**
 
 3. **Before dispatching the synthesizer** (when 2+ proposals exist), run
@@ -209,8 +215,12 @@ After every 2-3 agent dispatches, update the user:
 - What you plan to do next
 - Ask if they want to steer in a different direction
 
-**Hard checkpoint**: After 8 agent dispatches without explicit user input,
+**Hard checkpoint**: After 20 agent dispatches without explicit user input,
 STOP and report. Don't keep going — the user should confirm direction.
+The baseline P→S→A→C cycle is 6 dispatches (3 proposers + synth + auditor +
+critic); the remaining budget is for Investigator passes (each typically
+costs ~2 slots, since a structural change resets coverage and warrants a
+re-audit) and any follow-up proposer / synth refinements.
 
 ## Before Stopping
 

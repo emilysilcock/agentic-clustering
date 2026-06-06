@@ -1,9 +1,12 @@
 ---
 name: investigator
 description: >
-  Deep-dives into a specific question about the clusters. Use when a cluster
-  has low confidence, two clusters seem confused, or unclustered texts might
-  form a new category.
+  Deep-dives into a specific question about the clusters, producing a
+  recommendation grounded in pulled text evidence (unlike orchestrator-applied
+  description rewrites, which are not). Use when a cluster has low confidence,
+  two clusters seem confused, unclustered texts might form a new category, or
+  the critic flagged structural issues (overlap, gaps, granularity, boundary
+  confusion) with concrete evidence.
 tools: Read, Write, Bash, Grep
 skills:
   - corpus-tools
