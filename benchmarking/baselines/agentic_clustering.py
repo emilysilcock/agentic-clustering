@@ -91,11 +91,33 @@ GPT5_MINI_USD_PER_1M_CACHE_READ = 0.0125
 GPT5_MINI_USD_PER_1M_OUTPUT = 1.00
 PRICING_BASIS = "openai_gpt_5_mini_batch_api_50pct_discount_2026_05"
 
-PLUGIN_ROOT = Path(__file__).resolve().parents[2]
+# Plugin lives at <repo>/plugin/ after the 23a2126 marketplace restructure
+# (skills/ and agents/ used to be at the repo root). parents[2] is the repo
+# root; the /"plugin" segment is what makes the headless claude -p session
+# resolve /cluster-run + the subagents and what makes _run_uv_script find
+# init.py.
+PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
 SCRIPTS_DIR = PLUGIN_ROOT / "skills" / "corpus-tools" / "scripts"
 INIT_SCRIPT = SCRIPTS_DIR / "init.py"
-BUILD_PROMPT_SCRIPT = SCRIPTS_DIR / "build_classification_prompt.py"
-CLASSIFY_SCRIPT = SCRIPTS_DIR / "classify.py"
+
+# The classification scripts were split off into a separate plugin in
+# commit 36861bb. `build_classification_prompt.py` was dissolved entirely
+# (cluster-finalize now writes categories.json directly via state.py:952);
+# `classify.py` was moved to the text-classification plugin's classify-tools
+# scripts dir. We expect the text-classification repo cloned as a sibling
+# of agentic-clustering so the headless session can load both plugins.
+TEXT_CLASSIFICATION_ROOT = PLUGIN_ROOT.parents[1] / "text-classification" / "plugin"
+CLASSIFY_SCRIPT = TEXT_CLASSIFICATION_ROOT / "skills" / "classify-tools" / "scripts" / "classify.py"
+
+# Agent-dispatch budget for the orchestrator (Proposer + Synthesizer + Auditor
+# + Critic + Investigator combined, counted cumulatively across the whole run).
+# Matches the cluster-run SKILL.md hard checkpoint — both were raised from 8
+# on 2026-06-05 because audits across the 7-dataset sweep showed the Investigator
+# was dispatched on only 2 of 7 runs, with the 8-cap leaving no headroom beyond
+# the baseline 6 (3 proposer + synth + auditor + critic). At 20, a single
+# investigate → re-audit cycle (~2 slots) is cheap and the orchestrator can
+# afford ~7 such cycles before hitting the cap.
+MAX_AGENT_DISPATCHES = 20
 
 # SPEC §5.1.1 / §5.6.3: every method that feeds a document body to an LLM caps
 # it at 512 tiktoken cl100k_base tokens. The ClusterLLM / Huang & He / TopicGPT
@@ -219,7 +241,6 @@ def _orchestrator_prompt(
             "end up assigned to one of the real clusters."
         )
     )
-    force_assign_flag = "" if allow_none else " --force-assign"
     return f"""\
 You are orchestrating headless cluster discovery on the {dataset} benchmark dataset.
 
@@ -242,15 +263,13 @@ benchmark-mode constraints:
 5. {none_clause}
 6. Iterate (Proposer → Synthesizer → Auditor → Critic, dispatching Investigator
    on demand) until the standard stop criteria fire (Critic 'ready', coverage
-   >85%, diminishing returns), OR you have dispatched 8 agents — whichever
-   comes first. When stop criteria fire, run cluster-finalize.
-7. After cluster-finalize completes, build the classification prompt:
-
-    uv run --native-tls $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/build_classification_prompt.py \\
-        --taxonomy {workspace_dir}/taxonomy.md \\
-        --output   {workspace_dir}/classification/prompt.md{force_assign_flag}
-
-   Do NOT run classify.py — the benchmark harness handles that.
+   >85%, diminishing returns), OR you have dispatched {MAX_AGENT_DISPATCHES} agents — whichever
+   comes first (this matches the cluster-run skill's hard checkpoint; there is
+   no user to confirm continuation in benchmark mode). When stop criteria
+   fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
+   AND categories.json (the canonical handoff to the text-classification
+   plugin's /classify-run). Do NOT run classify.py — the benchmark harness
+   handles that.
 
 Finally, print a 5-line summary: number of iterations, final k, coverage,
 mean confidence, and any caveats.
@@ -271,10 +290,13 @@ def _run_orchestrator(
     # Persist the prompt next to the workspace for post-mortems.
     (workspace_dir / "orchestrator_prompt.txt").write_text(prompt, encoding="utf-8")
     extra_args = [
-        # Load the plugin (this repo) so /cluster-run, the proposer/auditor/
-        # critic/investigator/synthesizer agents, and the corpus-tools scripts
-        # are all resolvable inside the headless session.
+        # Load both plugins so /cluster-run + the proposer/auditor/critic/
+        # investigator/synthesizer agents + corpus-tools scripts resolve
+        # (agentic-clustering), and so /classify-run + classify.py resolve
+        # for the post-finalize classification step (text-classification —
+        # split off from this plugin in commit 36861bb).
         "--plugin-dir", str(PLUGIN_ROOT),
+        "--plugin-dir", str(TEXT_CLASSIFICATION_ROOT),
         # Headless sessions block tool execution by default. We need Bash +
         # Task + Read + Write + Edit unrestricted to drive the iteration loop.
         "--permission-mode", "bypassPermissions",
@@ -296,10 +318,13 @@ def _run_orchestrator(
 
 
 def _ensure_orchestrator_outputs(workspace_dir: Path) -> None:
+    # cluster-finalize writes all three. classification/prompt.md is gone
+    # since commit 36861bb dissolved build_classification_prompt.py;
+    # categories.json is the new canonical handoff to /classify-run.
     required = [
         workspace_dir / "final_taxonomy.json",
         workspace_dir / "taxonomy.md",
-        workspace_dir / "classification" / "prompt.md",
+        workspace_dir / "categories.json",
     ]
     missing = [p for p in required if not p.exists()]
     if missing:
