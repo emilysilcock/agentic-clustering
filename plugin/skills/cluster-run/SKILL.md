@@ -149,7 +149,7 @@ If `config.max_texts_per_sample` is set in state.json, `sample.py` enforces
 the cap automatically. Respect this in your task descriptions too — don't
 ask agents to process more texts than the cap allows.
 
-**Number of proposals** — start with 2-3 from different angles. Dispatch them
+**Number of proposals** — start with 6-7 from different angles. Dispatch them
 in parallel using concurrent Task calls (send multiple Task invocations in one
 message). If they converge, that's signal. If they diverge, get 1-2 more.
 Wider k_range warrants more proposals.
@@ -168,7 +168,7 @@ At each step:
 1. Read `$CLUSTERING_WORKSPACE/summary.md`
 
 2. Reason about what would be most valuable right now:
-   - No proposals yet → **propose** (start with 2-3 proposals in parallel)
+   - No proposals yet → **propose** (start with 6-7 proposals in parallel)
    - Have 2+ proposals, no synthesized cluster set → run **cross-proposal metrics**, then dispatch **synthesizer**
    - Have clusters but no audit → **audit**
    - Audit shows weak clusters → **investigate** the weak ones
