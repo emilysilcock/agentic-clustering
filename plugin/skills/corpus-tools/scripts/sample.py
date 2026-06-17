@@ -176,6 +176,43 @@ def sample_by_ids(corpus: list[dict], ids: list[str]) -> list[dict]:
     return results
 
 
+def shared_sample_path(name: str) -> Path:
+    return WORKSPACE / "shared_samples" / f"{name}.json"
+
+
+def save_shared_sample(name: str, results: list[dict]):
+    """Persist a drawn sample's IDs under a name so other agents can re-fetch it.
+
+    Stores only IDs (the corpus is the source of truth for text); --load resolves
+    them back to records. Overwrites an existing name (logged), so the "draw once"
+    convention is the caller's responsibility.
+    """
+    path = shared_sample_path(name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump([r["id"] for r in results], f)
+
+
+def load_shared_sample(corpus: list[dict], name: str) -> list[dict]:
+    """Return a previously saved shared sample by name (fetched by ID).
+
+    Not re-marked seen: a saved sample was already marked seen when it was drawn,
+    so re-fetching it must not double-count or shift coverage. Errors clearly if
+    the name doesn't exist yet (a proposer loading before the core was created).
+    """
+    path = shared_sample_path(name)
+    if not path.exists():
+        print(
+            f"Error: no shared sample named '{name}' (expected {path}). "
+            f"Create it first with: sample.py ... --save-as {name}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    with open(path, encoding="utf-8") as f:
+        ids = json.load(f)
+    return sample_by_ids(corpus, ids)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sample texts from corpus")
     parser.add_argument("--n", type=int, default=50, help="Number of texts to sample")
@@ -192,6 +229,13 @@ def main():
     parser.add_argument("--seed", type=int, default=None,
                         help="Seed for random sampling. If omitted, an auto-seed is generated "
                              "and recorded in log.jsonl so the sample is reproducible after the fact.")
+    parser.add_argument("--save-as", dest="save_as", default=None,
+                        help="After drawing, persist the returned sample under this name in "
+                             "shared_samples/<name>.json so other agents can re-fetch the identical "
+                             "set via --load. The draw itself is marked seen as usual.")
+    parser.add_argument("--load", dest="load_name", default=None,
+                        help="Return a previously --save-as'd sample by name, fetched by ID. Not "
+                             "re-marked seen (it was marked when drawn). Ignores --strategy/--n/--ids.")
     args = parser.parse_args()
 
     # Pick a seed (user-provided or auto-generated) and apply it. Auto-generating
@@ -215,7 +259,9 @@ def main():
     with lock:
         corpus = load_corpus()
 
-        if args.ids:
+        if args.load_name:
+            results = load_shared_sample(corpus, args.load_name)
+        elif args.ids:
             results = sample_by_ids(corpus, args.ids)
         elif args.strategy == "targeted":
             if not args.query:
@@ -230,23 +276,36 @@ def main():
         else:
             results = sample_random(corpus, args.n, args.include_seen)
 
-        # Mark sampled IDs as seen (unless fetching by specific IDs)
-        if results and not args.ids:
+        # Mark sampled IDs as seen — unless fetching by specific IDs or re-loading
+        # a saved shared sample (both are explicit re-fetches of already-seen texts).
+        if results and not args.ids and not args.load_name:
             seen = load_seen_ids()
             new_ids = {r["id"] for r in results}
             seen.update(new_ids)
             save_seen_ids(seen)
             update_sampled_count(len(results))
 
+        # Persist under a name if requested (after the draw is marked seen above).
+        if args.save_as and results:
+            save_shared_sample(args.save_as, results)
+
         # Record the sample for reproducibility. ID lookups and targeted (TF-IDF
         # argsort) are deterministic, but log them anyway so the trail is uniform.
+        if args.load_name:
+            strategy_label = f"load:{args.load_name}"
+        elif args.ids:
+            strategy_label = "ids"
+        else:
+            strategy_label = args.strategy
         log_detail_parts = [
-            f"strategy={'ids' if args.ids else args.strategy}",
-            f"n_requested={args.n if not args.ids else len(args.ids)}",
+            f"strategy={strategy_label}",
+            f"n_requested={args.n if not (args.ids or args.load_name) else len(results)}",
             f"n_returned={len(results)}",
             f"seed={seed}",
             f"include_seen={args.include_seen}",
         ]
+        if args.save_as:
+            log_detail_parts.append(f"save_as={args.save_as}")
         if args.strategy == "targeted" and args.query:
             log_detail_parts.append(f"query={args.query!r}")
         if args.strategy == "cluster" and args.cluster_id:

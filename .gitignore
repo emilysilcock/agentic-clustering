@@ -20,6 +20,14 @@ __pycache__/
 # Secrets — API keys loaded into os.environ by benchmarking/secrets.py
 secrets.json
 
+# Anonymized code package for paper submission (regenerable; never commit)
+/agentic-clustering-anonymous.zip
+/_anon_submission/
+
+# Planning side of the email-assistant dashboard — local only, never versioned.
+PLAN.md
+progress.jsonl
+
 # Editor / OS
 .vscode/
 .idea/
@@ -37,3 +45,4 @@ paper/*.out
 paper/*.bbl
 paper/*.blg
 paper/*.synctex.gz
+.report_entry.json

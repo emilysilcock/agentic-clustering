@@ -68,6 +68,15 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
   --n 50 --include-seen
 
+# Save a draw under a name so other agents can re-fetch the IDENTICAL set.
+# The draw is marked seen as usual; --save-as just also persists the IDs.
+uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
+  --n 50 --save-as shared_core
+
+# Re-fetch a previously saved sample by name (not re-marked seen, since the
+# draw was marked seen when created). Ignores --strategy/--n/--ids.
+uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py --load shared_core
+
 # Output: JSON list of {id, text} objects to stdout
 ```
 
