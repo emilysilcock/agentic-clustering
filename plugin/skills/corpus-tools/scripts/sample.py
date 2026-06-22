@@ -119,6 +119,66 @@ def sample_targeted(corpus: list[dict], n: int, query: str, include_seen: bool) 
     return [candidates[i] for i in top_indices if similarities[i] > 0]
 
 
+def sample_diverse(corpus: list[dict], n: int, include_seen: bool) -> list[dict]:
+    """Sample a maximally diverse set via TF-IDF farthest-point (max-min) sampling.
+
+    Greedy farthest-first traversal (k-center) over TF-IDF vectors: seed one
+    text, then repeatedly add the candidate whose minimum cosine distance to the
+    already-selected set is largest. This spreads the draw across the corpus
+    instead of over-representing dense regions the way a uniform random draw
+    does, so a downstream consumer (e.g. an auditor stress-testing a taxonomy)
+    sees the corpus's breadth — including sparse/edge regions a random sample
+    tends to miss.
+
+    Same dependency footprint as the ``targeted`` strategy (scikit-learn).
+    Reproducible via ``--seed``: the seed only picks the starting text, which
+    then fully determines the deterministic traversal.
+    """
+    try:
+        from sklearn.feature_extraction.text import TfidfVectorizer
+        from sklearn.metrics.pairwise import cosine_similarity
+    except ImportError:
+        print("Error: scikit-learn required for diverse sampling. Install with: uv add scikit-learn", file=sys.stderr)
+        sys.exit(1)
+
+    import numpy as np
+
+    if include_seen:
+        candidates = corpus
+    else:
+        seen = load_seen_ids()
+        candidates = [r for r in corpus if r["id"] not in seen]
+
+    if not candidates:
+        print("Warning: no unseen texts remaining", file=sys.stderr)
+        return []
+
+    n = min(n, len(candidates))
+    if n >= len(candidates):
+        # Asking for everything — the diversity ordering is moot, return all.
+        return list(candidates)
+
+    texts = [r["text"] for r in candidates]
+    vectorizer = TfidfVectorizer(max_features=10000, stop_words="english")
+    tfidf = vectorizer.fit_transform(texts)  # L2-normalized sparse rows
+    n_cand = tfidf.shape[0]
+
+    # Farthest-first traversal. ``min_dist[i]`` = cosine distance from candidate
+    # i to the nearest already-selected point; start at +inf so the first pick
+    # is the seeded random start, then every subsequent pick maximizes the
+    # minimum distance to the selected set.
+    min_dist = np.full(n_cand, np.inf)
+    start = random.randrange(n_cand)
+    selected = [start]
+    while len(selected) < n:
+        sims = cosine_similarity(tfidf[selected[-1]], tfidf).ravel()
+        np.minimum(min_dist, 1.0 - sims, out=min_dist)
+        min_dist[selected] = -np.inf  # never reselect an already-picked point
+        selected.append(int(np.argmax(min_dist)))
+
+    return [candidates[i] for i in selected]
+
+
 def sample_cluster(corpus: list[dict], n: int, cluster_id: str) -> list[dict]:
     """Sample texts that were assigned to a specific cluster in recent audits.
 
@@ -179,8 +239,11 @@ def sample_by_ids(corpus: list[dict], ids: list[str]) -> list[dict]:
 def main():
     parser = argparse.ArgumentParser(description="Sample texts from corpus")
     parser.add_argument("--n", type=int, default=50, help="Number of texts to sample")
-    parser.add_argument("--strategy", default="random", choices=["random", "targeted", "cluster"],
-                        help="Sampling strategy")
+    parser.add_argument("--strategy", default="random", choices=["random", "targeted", "diverse", "cluster"],
+                        help="Sampling strategy. random=uniform draw; targeted=TF-IDF "
+                             "similarity to --query; diverse=TF-IDF farthest-point (max-min) "
+                             "spread across the corpus; cluster=texts assigned to --cluster-id "
+                             "in recent audits")
     parser.add_argument("--query", help="Query string for targeted sampling")
     parser.add_argument("--cluster-id", help="Cluster ID for cluster-based sampling")
     parser.add_argument("--ids", nargs="+", help="Specific text IDs to fetch")
@@ -222,6 +285,8 @@ def main():
                 print("Error: --query required for targeted strategy", file=sys.stderr)
                 sys.exit(1)
             results = sample_targeted(corpus, args.n, args.query, args.include_seen)
+        elif args.strategy == "diverse":
+            results = sample_diverse(corpus, args.n, args.include_seen)
         elif args.strategy == "cluster":
             if not args.cluster_id:
                 print("Error: --cluster-id required for cluster strategy", file=sys.stderr)

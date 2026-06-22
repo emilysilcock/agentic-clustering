@@ -46,7 +46,8 @@ caps `--n` to that value (with a stderr note).
 a seed and records it in `log.jsonl` so the draw is reproducible after the
 fact. The `targeted` and `--ids` strategies are deterministic given inputs,
 so the seed doesn't affect their outcome — but it's still logged for uniform
-provenance.
+provenance. For `diverse`, the seed picks only the starting text; the
+farthest-point traversal is deterministic from there.
 
 ```bash
 # Random sample (default: excludes previously seen texts)
@@ -55,6 +56,10 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py --n 50
 # Targeted (texts similar to a query, via TF-IDF)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
   --n 30 --strategy targeted --query "billing overcharge"
+
+# Diverse (maximally spread across the corpus, via TF-IDF farthest-point)
+uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
+  --n 50 --strategy diverse
 
 # Targeted (texts assigned to a specific cluster in recent audits)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
