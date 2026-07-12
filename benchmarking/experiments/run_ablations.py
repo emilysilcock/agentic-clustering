@@ -1,8 +1,9 @@
-"""CLI runner for the two ablations on our method (discover-k config).
+"""CLI runner for the three ablations on our method.
 
-Both ablations are isolated in benchmarking.baselines.agentic_ablations and
-write to new method names / workspace dirs — the completed main runs are never
-touched.
+All three are isolated in benchmarking.baselines.agentic_ablations and write to
+new method names / workspace dirs — the completed main runs are never touched.
+Ablations 1-2 run from the discover-k config; ablation 3 (no-k) removes the k
+anchor entirely.
 
 Examples:
     # Ablation 1 (synth-only) — cheap, classification-only, runs on OpenAI.
@@ -11,11 +12,15 @@ Examples:
     # Ablation 2 (no-task) — full frontier runs, Opus subscription.
     uv run --native-tls python -m benchmarking.experiments.run_ablations --notask --all
 
+    # Ablation 3 (no-k) — full frontier runs, keeps the lens, drops k. Opus subscription.
+    uv run --native-tls python -m benchmarking.experiments.run_ablations --nok --only massive_domain
+
     # Single dataset
     uv run --native-tls python -m benchmarking.experiments.run_ablations --synthonly --only banking77
 
-The two ablations hit different APIs (OpenAI vs the Claude Code subscription),
-so the synth-only sweep and the no-task sweep can run concurrently.
+The synth-only sweep hits OpenAI while no-task and no-k drive the Claude Code
+subscription, so synth-only can run concurrently with either — but no-task and
+no-k must not run at the same time (they'd contend for the same subscription).
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ import argparse
 
 from benchmarking.baselines.agentic_ablations import (
     SWEEP_ORDER,
+    run_nok,
     run_notask,
     run_synthonly,
 )
@@ -56,6 +62,7 @@ def main() -> None:
     ab = parser.add_mutually_exclusive_group(required=True)
     ab.add_argument("--synthonly", action="store_true", help="Ablation 1: re-classify against first synth taxonomy.")
     ab.add_argument("--notask", action="store_true", help="Ablation 2: full discover-k run with blank instructions.")
+    ab.add_argument("--nok", action="store_true", help="Ablation 3: full run with lens kept but k information removed.")
 
     sel = parser.add_mutually_exclusive_group()
     sel.add_argument("--all", action="store_true", help="Run all 7 datasets in sweep order (smallest-up).")
@@ -65,9 +72,10 @@ def main() -> None:
         "--resume-classify",
         action="store_true",
         help=(
-            "no-task only: skip init + orchestrator and re-run just the classify "
-            "pass from the existing seed=<n>_discoverk_notask workspace. Use after "
-            "a classify-step failure to avoid re-running the agent loop."
+            "no-task / no-k only: skip init + orchestrator and re-run just the "
+            "classify pass from the existing seed=<n>_discoverk_notask / "
+            "seed=<n>_nok workspace. Use after a classify-step failure to avoid "
+            "re-running the agent loop."
         ),
     )
     parser.add_argument(
@@ -81,8 +89,8 @@ def main() -> None:
     )
     args = parser.parse_args()
     if args.resume_classify and args.synthonly:
-        parser.error("--resume-classify applies to --notask only")
-    if args.reuse_existing_classify and args.notask:
+        parser.error("--resume-classify applies to --notask / --nok only")
+    if args.reuse_existing_classify and not args.synthonly:
         parser.error("--reuse-existing-classify applies to --synthonly only")
 
     if args.all:
@@ -92,13 +100,15 @@ def main() -> None:
     else:
         datasets = ["banking77"]  # default: smoke test on the smallest
 
-    label = "synthonly" if args.synthonly else "notask"
+    label = "synthonly" if args.synthonly else ("nok" if args.nok else "notask")
 
     rows: list[dict] = []
     for name in datasets:
         print(f"\n========== ablation={label} / {name} ==========")
         if args.synthonly:
             rows.append(run_synthonly(name, seed=args.seed, reuse_existing_classify=args.reuse_existing_classify))
+        elif args.nok:
+            rows.append(run_nok(name, seed=args.seed, resume_classify=args.resume_classify))
         else:
             rows.append(run_notask(name, seed=args.seed, resume_classify=args.resume_classify))
 
