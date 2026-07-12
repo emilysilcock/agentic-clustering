@@ -334,6 +334,40 @@ def _ensure_orchestrator_outputs(workspace_dir: Path) -> None:
         )
 
 
+def _reconcile_categories_with_allow_none(categories_path: Path, allow_none: bool) -> int:
+    """Make categories.json's ``none`` entry match the dataset's allow_none
+    policy, reproducing the old ``classify.py --force-assign`` semantics
+    deterministically.
+
+    Post-split, classify.py has no --force-assign flag: it derives behaviour
+    purely from whether a ``{"id": "none"}`` entry is present in categories.json
+    (build_schema / build_system_prompt). Present => ``none`` is a permitted
+    label; absent => the schema enum forces every text onto a real cluster.
+    cluster-finalize appends a ``none`` entry by default (state.py), so for
+    force-assign datasets (allow_none=False) we strip it here rather than relying
+    on the orchestrator having passed --no-none-category. The appended entry
+    mirrors the one state.py writes, so allow_none=True runs are identical
+    whether the orchestrator kept it or we re-add it. Returns the category count.
+    """
+    cats = json.loads(categories_path.read_text(encoding="utf-8"))
+    has_none = any(c.get("id") == "none" for c in cats)
+    if allow_none and not has_none:
+        cats.append({
+            "id": "none",
+            "name": "Out of scope",
+            "description": (
+                "Text does not fit any of the categories above. Use when the "
+                "text is genuinely outside the taxonomy, not just a poor fit."
+            ),
+        })
+    elif not allow_none and has_none:
+        cats = [c for c in cats if c.get("id") != "none"]
+    categories_path.write_text(
+        json.dumps(cats, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return len(cats)
+
+
 def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool) -> Path:
     load_secrets_into_env()
     required_key = "OPENAI_API_KEY" if CLASSIFY_PROVIDER == "openai" else "ANTHROPIC_API_KEY"
@@ -343,6 +377,21 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
             f"(flat dict, e.g. {{\"{required_key}\": \"...\"}}) or export it as a "
             f"shell env var. classify.py needs it to call the {CLASSIFY_MODEL} API."
         )
+    # Post-split classify.py takes --categories (categories.json), not --prompt,
+    # and drives force-assign off the presence of a `none` entry rather than a
+    # flag. cluster-finalize writes categories.json to the workspace root; we
+    # reconcile its `none` entry with allow_none first (see helper above).
+    categories_path = workspace_dir / "categories.json"
+    if not categories_path.exists():
+        raise FileNotFoundError(
+            f"categories.json not found at {categories_path}; cluster-finalize must "
+            f"run before classify (was the orchestrator/finalize step skipped?)."
+        )
+    n_cats = _reconcile_categories_with_allow_none(categories_path, allow_none)
+    print(
+        f"[classify] categories.json reconciled to allow_none={allow_none} "
+        f"({n_cats} categories, none {'included' if allow_none else 'stripped'})"
+    )
     classify_dir = workspace_dir / "classification" / "classifications"
     classify_dir.mkdir(parents=True, exist_ok=True)
     output_path = classify_dir / "seed_0.csv"
@@ -350,7 +399,7 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
         "--input", str(documents_path),
         "--text-col", "text",
         "--id-col", "doc_id",
-        "--prompt", str(workspace_dir / "classification" / "prompt.md"),
+        "--categories", str(categories_path),
         "--output", str(output_path),
         "--provider", CLASSIFY_PROVIDER,
         "--model", CLASSIFY_MODEL,
@@ -358,8 +407,6 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
     ]
     if CLASSIFY_MODE == "async":
         args += ["--concurrency", str(CLASSIFY_CONCURRENCY)]
-    if not allow_none:
-        args.append("--force-assign")
     _run_uv_script(CLASSIFY_SCRIPT, args)
     return output_path
 
@@ -405,7 +452,9 @@ def _build_predictions(
         if row is None:
             pred_id, pred_label, confidence = NONE_LABEL_ID, NONE_LABEL_NAME, None
         else:
-            cluster_str = (row.get("cluster") or "").strip()
+            # Post-split classify.py writes the assigned cluster id in the
+            # `label` column (was `cluster` under the old prompt-based CLI).
+            cluster_str = (row.get("label") or "").strip()
             if cluster_str in ("", "none"):
                 pred_id, pred_label = NONE_LABEL_ID, NONE_LABEL_NAME
             else:
