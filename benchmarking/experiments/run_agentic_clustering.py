@@ -22,6 +22,7 @@ from typing import Iterable
 
 from benchmarking.baselines.agentic_clustering import (
     METHOD,
+    PUBLISHED_INITIAL_PROPOSERS,
     run_agentic_clustering,
 )
 
@@ -112,6 +113,17 @@ def main() -> None:
             "(seed=<n>_discoverk) so the given-k artifacts are untouched."
         ),
     )
+    parser.add_argument(
+        "--initial-proposers",
+        type=int,
+        default=PUBLISHED_INITIAL_PROPOSERS,
+        help=(
+            "Number of proposers to dispatch in the initial round. Defaults to "
+            "%(default)s to reproduce the published main-results configuration "
+            "(the '2-3' plugin era, pinned to 3); the current plugin default is "
+            "6-7. Pass a different value only to deviate deliberately."
+        ),
+    )
     args = parser.parse_args()
 
     if args.all:
@@ -131,6 +143,7 @@ def main() -> None:
             skip_classify=args.skip_classify,
             resume_classify=args.resume_classify,
             discover_k=args.discover_k,
+            initial_proposers=args.initial_proposers,
         )
         rows.append(row)
 

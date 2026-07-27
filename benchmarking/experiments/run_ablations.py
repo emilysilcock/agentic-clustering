@@ -26,6 +26,8 @@ no-k must not run at the same time (they'd contend for the same subscription).
 from __future__ import annotations
 
 import argparse
+import sys
+import traceback
 
 from benchmarking.baselines.agentic_ablations import (
     SWEEP_ORDER,
@@ -103,16 +105,43 @@ def main() -> None:
     label = "synthonly" if args.synthonly else ("nok" if args.nok else "notask")
 
     rows: list[dict] = []
+    failures: list[tuple[str, str]] = []
     for name in datasets:
         print(f"\n========== ablation={label} / {name} ==========")
-        if args.synthonly:
-            rows.append(run_synthonly(name, seed=args.seed, reuse_existing_classify=args.reuse_existing_classify))
-        elif args.nok:
-            rows.append(run_nok(name, seed=args.seed, resume_classify=args.resume_classify))
-        else:
-            rows.append(run_notask(name, seed=args.seed, resume_classify=args.resume_classify))
+        # Sweep resilience: a single dataset's failure (e.g. an orchestrator that
+        # returns without finalizing, or a transient API/subprocess error) must
+        # NOT abort the remaining datasets. Log it, record it, and continue; the
+        # failed dataset simply has no prediction and can be re-run later with
+        # --only. Mirrors run_overlap_sweep's skip-and-continue behaviour.
+        try:
+            if args.synthonly:
+                rows.append(run_synthonly(name, seed=args.seed, reuse_existing_classify=args.reuse_existing_classify))
+            elif args.nok:
+                rows.append(run_nok(name, seed=args.seed, resume_classify=args.resume_classify))
+            else:
+                rows.append(run_notask(name, seed=args.seed, resume_classify=args.resume_classify))
+        except Exception as exc:  # noqa: BLE001 — intentional: isolate per-dataset failures
+            print(
+                f"\n[{label}/{name}] FAILED — skipping, sweep continues:\n"
+                f"{traceback.format_exc()}",
+                file=sys.stderr,
+                flush=True,
+            )
+            failures.append((name, f"{type(exc).__name__}: {exc}"))
+            continue
 
     _print_rows(rows)
+    if failures:
+        print(
+            f"\n{'='*60}\n{len(failures)}/{len(datasets)} dataset(s) FAILED and were skipped:",
+            file=sys.stderr,
+        )
+        for name, err in failures:
+            print(f"  - {name}: {err}", file=sys.stderr)
+        print(
+            f"Re-run just these with: --{label} --only {' '.join(n for n, _ in failures)}",
+            file=sys.stderr,
+        )
 
 
 if __name__ == "__main__":

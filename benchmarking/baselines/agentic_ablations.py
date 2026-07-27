@@ -96,6 +96,7 @@ from benchmarking.baselines.agentic_clustering import (
     _read_final_taxonomy,
     _run_classify,
     _run_uv_script,
+    _summarize_orchestrator_usage,
     _taxonomy_str_to_int_id,
 )
 from benchmarking.data_processing.load import load_processed
@@ -604,8 +605,8 @@ def _nok_orchestrator_prompt(*, workspace_dir, dataset, n_docs, allow_none) -> s
         "natural number of clusters the corpus supports from the data and the "
         "task description alone; do NOT infer a target from the nominal k_range "
         "shown in summary.md (it is a non-binding sentinel spanning 2..N). "
-        "Dispatch the standard 6-7 proposers to start; do NOT scale the proposer "
-        "count up on account of the wide nominal range."
+        "Dispatch 2-3 proposers to start (matching the paper's proposer regime); "
+        "do NOT scale the proposer count up on account of the wide nominal range."
     )
     return prompt.replace(needle, replacement)
 
@@ -628,16 +629,42 @@ def _run_nok_orchestrator(*, workspace_dir: Path, dataset: str, n_docs: int, all
     # subscription login on every dataset — same rationale as _run_notask_orchestrator.
     os.environ.pop("ANTHROPIC_API_KEY", None)
     t0 = time.perf_counter()
+    # capture={} routes the call through `--output-format json` so we recover the
+    # session-wide Opus token usage (modelUsage / total_cost_usd, which include
+    # every Task sub-agent). The Max subscription meters no tokens itself, so this
+    # is the only place big-model usage is observable — it must be captured live.
+    # Mirrors _run_orchestrator in agentic_clustering.py.
+    capture: dict = {}
     stdout = call_claude(
         prompt,
         model=ORCHESTRATOR_MODEL,
         timeout_s=60 * 60 * 4,
         log_prefix=f"[nok/{dataset}]",
         extra_args=extra_args,
+        capture=capture,
     )
     t1 = time.perf_counter()
     (workspace_dir / "orchestrator_stdout.txt").write_text(stdout or "", encoding="utf-8")
-    return {"wall_clock_s": t1 - t0, "stdout": stdout}
+    result_json = capture.get("result_json") or {}
+    if result_json:
+        (workspace_dir / "orchestrator_result.json").write_text(
+            json.dumps(result_json, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    usage = _summarize_orchestrator_usage(result_json)
+    if usage is not None:
+        print(
+            f"[nok/{dataset}] orchestrator usage: "
+            f"big_in={usage['big_input_tokens']:,} big_out={usage['big_output_tokens']:,} "
+            f"cost_usd=${usage.get('total_cost_usd') or 0:.2f} turns={usage.get('num_turns')}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[nok/{dataset}] WARNING: no modelUsage in orchestrator result; "
+            f"big-model tokens will be absent (results-table cell stays '?').",
+            flush=True,
+        )
+    return {"wall_clock_s": t1 - t0, "stdout": stdout, "usage": usage}
 
 
 def run_nok(dataset_name: str, *, seed: int = 0, resume_classify: bool = False) -> dict:
@@ -777,6 +804,10 @@ def run_nok(dataset_name: str, *, seed: int = 0, resume_classify: bool = False) 
             "cluster_version_at_finalize": int(final_taxonomy.get("cluster_version", 0)),
             "orchestrator_wall_clock_s": orch["wall_clock_s"],
             "classify_csv_path": str(classify_csv_path),
+            # Big-model (Opus) token usage for the agent loop, captured live from
+            # the orchestrator's `--output-format json` result (mirrors the main
+            # method). Absent on resume runs => results-table cell stays '?'.
+            **({"orchestrator_usage": orch["usage"]} if orch.get("usage") else {}),
         },
     )
     print(

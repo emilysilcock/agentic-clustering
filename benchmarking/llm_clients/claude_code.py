@@ -22,6 +22,7 @@ Consumers:
 
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
@@ -29,6 +30,12 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+
+# No console window for the `claude` child — matters when the sweep is launched
+# as a detached background process (a DETACHED_PROCESS parent has no console, so
+# a default-flag child would allocate a *visible* one). Platform-guarded: 0 on
+# non-Windows.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180.0
@@ -76,6 +83,41 @@ class ClaudeCodeError(RuntimeError):
         return f"claude -p exited {self.returncode}: " + " | ".join(head)
 
 
+# modelUsage token keys we sum across retry attempts; contextWindow /
+# maxOutputTokens are constants (carried through, not summed).
+_USAGE_SUM_KEYS = (
+    "inputTokens", "outputTokens", "cacheReadInputTokens",
+    "cacheCreationInputTokens", "costUSD", "webSearchRequests",
+)
+
+
+def _accumulate_model_usage(acc: dict, parsed: dict) -> None:
+    """Add one attempt's ``modelUsage`` + ``total_cost_usd`` into ``acc``.
+
+    Each ``claude -p`` invocation is a distinct session; on a usage-limit (429)
+    the client re-invokes and the CLI resumes the same workspace, but each
+    invocation's result JSON reports only *its own* session's usage. Summing
+    across every attempt (429s + final success) recovers the true total
+    consumed to produce the output --- otherwise the pre-limit work (often the
+    bulk: proposers / synth / audit) is silently dropped and only the final
+    session's tokens are seen. Distinct sessions don't share usage, so there is
+    no double-counting.
+    """
+    for model, u in (parsed.get("modelUsage") or {}).items():
+        s = acc["model_usage"].setdefault(model, {})
+        for k in _USAGE_SUM_KEYS:
+            v = u.get(k)
+            if isinstance(v, (int, float)):
+                s[k] = s.get(k, 0) + v
+        for k in ("contextWindow", "maxOutputTokens"):
+            if k in u:
+                s[k] = u[k]
+    c = float(parsed.get("total_cost_usd") or 0.0)
+    acc["cost_usd"] += c
+    acc["attempts"] += 1
+    acc["per_attempt_cost_usd"].append(c)
+
+
 def call_claude(
     prompt: str,
     *,
@@ -84,12 +126,22 @@ def call_claude(
     max_limit_waits: int = DEFAULT_MAX_LIMIT_WAITS,
     log_prefix: str = "[claude_code]",
     extra_args: list[str] | None = None,
+    capture: dict | None = None,
 ) -> str:
     """Run `claude -p` once. Block on usage limits until reset, then retry.
 
     Returns the assistant text (`proc.stdout`). Raises ``ClaudeCodeError`` on
     any non-usage-limit non-zero exit, or after ``max_limit_waits`` cycles of
     usage-limit hits in a row.
+
+    ``capture``: when a dict is passed, the call runs with
+    ``--output-format json`` and the parsed result object is stored under
+    ``capture["result_json"]`` (fields include ``modelUsage`` and
+    ``total_cost_usd``, which are session-wide and *include Task sub-agents* ---
+    verified empirically; the top-level ``usage`` is main-loop only). The return
+    value is then the JSON's ``result`` text rather than raw stdout, so the
+    contract (return the assistant's text) is unchanged for callers. Consumers
+    that don't pass ``capture`` keep the plain-text stdout path untouched.
 
     ``extra_args`` are inserted between the standard flags and the prompt —
     used by the agentic-clustering benchmark wrapper to pass
@@ -111,11 +163,16 @@ def call_claude(
         "--model",
         model,
         "--no-session-persistence",
+        *(["--output-format", "json"] if capture is not None else []),
         *(extra_args or []),
     ]
     if not prompt_via_stdin:
         cmd.append(prompt)
     stdin_input = prompt if prompt_via_stdin else None
+
+    # Accumulates token usage across every attempt (incl. usage-limit retries)
+    # so the captured total reflects all work, not just the final session.
+    acc = {"model_usage": {}, "cost_usd": 0.0, "attempts": 0, "per_attempt_cost_usd": []}
 
     while True:
         try:
@@ -128,6 +185,7 @@ def call_claude(
                 check=False,
                 encoding="utf-8",
                 errors="replace",
+                creationflags=_CREATE_NO_WINDOW,
             )
         except subprocess.TimeoutExpired as exc:
             print(
@@ -145,6 +203,7 @@ def call_claude(
                     check=False,
                     encoding="utf-8",
                     errors="replace",
+                    creationflags=_CREATE_NO_WINDOW,
                 )
             except subprocess.TimeoutExpired:
                 raise ClaudeCodeError(
@@ -156,10 +215,52 @@ def call_claude(
         stdout = proc.stdout or ""
         combined = stdout + "\n" + stderr
 
+        # Capture mode: a well-formed success envelope is authoritative, so we
+        # accept it *before* the text-based usage-limit heuristic --- otherwise
+        # a benign "rate limit"/"session limit" substring inside the JSON result
+        # (e.g. in a cluster description) would be mistaken for a real cap and
+        # trigger a spurious wait. A non-success/unparseable body falls through
+        # to the limit/error handling below.
+        if capture is not None and proc.returncode == 0:
+            try:
+                parsed = json.loads(stdout)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict) and parsed.get("type") == "result" and not parsed.get("is_error"):
+                _accumulate_model_usage(acc, parsed)
+                # Overwrite the final envelope's per-session totals with the
+                # cross-attempt sums so downstream (orchestrator_result.json,
+                # _summarize_orchestrator_usage) sees the true total consumed,
+                # not just this last session's slice.
+                parsed["modelUsage"] = acc["model_usage"]
+                parsed["total_cost_usd"] = acc["cost_usd"]
+                parsed["retry_attempts"] = acc["attempts"]
+                parsed["per_attempt_cost_usd"] = acc["per_attempt_cost_usd"]
+                capture["result_json"] = parsed
+                return parsed.get("result", "") or ""
+
         if proc.returncode == 0 and not _looks_like_usage_limit(combined):
+            if capture is not None:
+                raise ClaudeCodeError(
+                    returncode=0,
+                    stderr=(
+                        "--output-format json: exit 0 but result was not a "
+                        f"success envelope; head: {stdout[:400]!r}"
+                    ),
+                )
             return stdout
 
         if _looks_like_usage_limit(combined):
+            # Bank this interrupted attempt's usage before sleeping --- the
+            # pre-limit work (proposers/synth/audit) is real and would otherwise
+            # be lost when the retry starts a fresh session.
+            if capture is not None:
+                try:
+                    p429 = json.loads(stdout)
+                except ValueError:
+                    p429 = None
+                if isinstance(p429, dict) and p429.get("modelUsage"):
+                    _accumulate_model_usage(acc, p429)
             waits += 1
             if waits > max_limit_waits:
                 raise ClaudeCodeError(
