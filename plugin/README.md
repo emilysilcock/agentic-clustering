@@ -43,6 +43,40 @@ This auto-installs `text-classification` alongside it.
    - `final_taxonomy.json` — the same, for programmatic use
    - `categories.json` — the structured category definitions consumed by the classify commands below
 
+---
+
+**Once it starts, let it run.** `/cluster-run` is designed to work unattended. The orchestrator decides on its own when to pull a fresh sample, when to propose new clusters, when to merge or split them, and when to send an auditor, investigator, or critic after a weak spot — it converges without you. Answer the setup questions and step away; you don't need to nudge the loop between iterations, and doing so is usually counterproductive. Steps 2 and 3 are there if you want them, not because a normal run needs them — most runs go straight from `/cluster-run` to `/cluster-finalize`.
+
+#### The two answers that matter
+
+The setup questions are where you actually shape the result, and two of them do most of the work. `/cluster-run` **will** ask you both — the point is that **you** decide them, and you're not picking from a menu. Anything you can express in a sentence is a valid answer.
+
+**1. The cluster-count range.** You give a min and a max, not a fixed `k`; the loop searches within it. The range is a budget for how coarse or fine the taxonomy should be:
+
+| Range | What you get |
+|---|---|
+| `2 6` | a handful of broad themes |
+| `10 20` | a working taxonomy for a coding scheme |
+| `30 60` | fine-grained, closer to a labelled category list |
+
+Pick it from what you'll *do* with the clusters — a summary report needs far fewer than a ticket-routing system. If you genuinely don't know, give a wide range and narrow it on a second run once you've seen the first taxonomy.
+
+**2. The clustering instructions.** A free-text lens telling every agent what to pay attention to. Optional, but the single highest-leverage input: the same corpus clusters completely differently depending on what you ask for.
+
+```text
+cluster by the type of problem the respondent describes
+group by sentiment, not topic
+focus on actionable categories a support team could route tickets to
+distinguish by policy area; ignore which politician is mentioned
+split on the mechanism of harm described, not the industry
+```
+
+Your instructions are carried into every proposer, synthesizer, auditor, investigator, and critic dispatch and act as the **primary constraint** on cluster formation — say "cluster by issue type" and the agents won't cluster by sentiment. Leave it blank and they'll discover whatever structure is most salient in the data, which is a reasonable starting point but rarely the one you actually wanted. One sentence here is usually worth more than a longer run.
+
+Both answers are stored in the workspace's `state.json`, so resuming a session picks them back up. To try a different lens or a different granularity, start a fresh run — they're cheap to compare.
+
+---
+
 ### Phase 2 — Classify your corpus
 
 5. **`/classify-run`** — applies the finalized `categories.json` to a corpus, classifying **every** text into a category (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/classifications/`. Pick an execution mode:
