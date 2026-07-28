@@ -4,7 +4,7 @@ description: >
   Run the agentic cluster discovery workflow. Iteratively discovers natural
   clusters in a text corpus using proposer, synthesizer, auditor, investigator,
   and critic subagents.
-allowed-tools: Task, Read, Bash, Write
+allowed-tools: Task, Read, Bash, Write, AskUserQuestion
 ---
 
 # Cluster Discovery Orchestration
@@ -70,14 +70,84 @@ For new runs (no existing workspace, or user chose "start fresh"), ask up front:
    because it determines where everything goes.
 2. **Corpus path** — CSV/JSON file
 3. **Text column name**
-4. **Target cluster count range** (k_range)
-5. **Clustering instructions** (optional but highly recommended — how should
-   clusters be defined? e.g., "cluster by issue type", "group by sentiment and
-   topic", "focus on actionable categories for a support team"). Ask the user
-   if they have specific instructions; if they decline, proceed without them.
+4. **Target cluster count range** (k_range) — see "Asking for the range" below.
+5. **Clustering instructions** — see "Asking for the instructions" below.
 6. **Model tier**: "quality" (default), "balanced", or "economy" (optional)
 7. **Max texts per sample** (optional — hard cap on how many texts agents pull
    per sample; useful for large corpora or cost control)
+
+Questions 4 and 5 are the two answers that actually shape the result, and both
+are **entirely the user's call** — you are not offering a menu they must pick
+from. Ask each with AskUserQuestion so the run stops and waits for a real
+answer, and make the free-text escape hatch explicit in the question itself.
+
+**Render both through the AskUserQuestion tool. Do not reproduce the options as
+a markdown table or a bulleted list in your reply** — the tool call is what
+makes the run stop and wait for the user. Writing the options out as prose is
+the failure mode to avoid, not a lighter-weight alternative to the tool.
+
+**Do not call `init.py` until the user has answered both 4 and 5.** There is no
+default for either. "No instructions" is a valid answer, but only when the user
+actually chooses it — never when they simply haven't replied yet.
+
+#### Asking for the range
+
+Ask via AskUserQuestion with exactly these options. Do not invent your own
+buckets, do not narrow them, and do not derive a range from corpus size —
+corpus stats set sample sizes, not taxonomy granularity. A 200-text corpus can
+warrant 40 fine-grained categories; a 50,000-text one can warrant 5. Do not
+mark any option "(Recommended)": there is no default here, and the ordering is
+ascending, not a preference ranking.
+
+- **question**: "How many clusters do you want? Min and max are entirely your
+  call — these are just ballparks, so pick Other and type any exact range you
+  like (e.g. '25-40', '4-6', '80-150')."
+- **header**: "Range"
+- **options**:
+  - `Broad: 2-8` — "A handful of high-level themes. Right when the output is a
+    summary or a report."
+  - `Working: 10-25` — "Enough granularity for a human coding scheme or
+    qualitative analysis."
+  - `Fine: 30-60` — "Closer to a labelled category list — routing, tagging,
+    downstream classification."
+
+The three options above are the AskUserQuestion payload, not a table to print.
+
+If the user picks a bucket, record its numbers verbatim as min/max. If they use
+Other, accept whatever they give, however wide or narrow — `5-80` is a
+legitimate answer and means "search broadly, I'll narrow on a rerun".
+
+#### Asking for the instructions
+
+This is a free-text lens telling every agent what to pay attention to. It's the
+single highest-leverage input: the same corpus clusters completely differently
+depending on what you ask for.
+
+First, read ~15 rows from the corpus file directly (Bash/Read on the path the
+user gave — `init.py` hasn't run yet, so `sample.py` isn't available). Use them
+to draft 3 lenses that are genuinely plausible *for this corpus*. Never reuse
+the examples below verbatim; they illustrate the format, not the content. If
+the corpus is unreadable or the texts are too opaque to draft from, fall back
+to generic lenses rather than blocking on it.
+
+- **question**: "What should the agents pay attention to when forming clusters?
+  Entirely your call — the options below are just illustrations drawn from your
+  corpus. Pick Other to write your own lens in a sentence; anything you can
+  express in one is valid."
+- **header**: "Lens"
+- **options** (first is always the opt-out; do not mark any "(Recommended)"):
+  - `No instructions` — "Agents discover whatever structure is most salient in
+    the data. A reasonable start, but rarely the exact lens you wanted."
+  - `Problem type` — "cluster by the type of problem the respondent describes"
+  - `Sentiment` — "group by sentiment and tone, not topic"
+  - `Actionability` — "focus on actionable categories a support team could
+    route tickets to"
+
+The four options above are the AskUserQuestion payload, not a table to print.
+
+The label is a handle, not the instruction. When the user picks one of the lens
+options, pass its **description** verbatim as `--instructions` — never the
+label. "Problem type" is not a usable instruction; the sentence is.
 
 Then initialize:
 ```bash
