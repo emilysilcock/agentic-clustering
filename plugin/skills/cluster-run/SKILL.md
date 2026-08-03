@@ -62,101 +62,181 @@ Then ask: **"Continue this session or start fresh?"**
 
 ### 2. New run setup
 
-For new runs (no existing workspace, or user chose "start fresh"), ask up front:
+For new runs (no existing workspace, or user chose "start fresh"), collect the
+seven setup answers below, in this order, before running init:
 
-1. **Output directory** — "Where should the clustering workspace live?" Suggest
-   the project root as default (e.g., `./clustering/`). The user might want it
-   alongside their data, in a specific output folder, etc. This is asked early
-   because it determines where everything goes.
-2. **Corpus path** — CSV/JSON file
-3. **Text column name**
-4. **Target cluster count range** (k_range) — see "Asking for the range" below.
-5. **Clustering instructions** — see "Asking for the instructions" below.
-6. **Model tier**: "quality" (default), "balanced", or "economy" (optional)
-7. **Max texts per sample** (optional — hard cap on how many texts agents pull
-   per sample; useful for large corpora or cost control)
+1. **Workspace directory** (Q1)
+2. **Corpus path** (Q2)
+3. **Text column** (Q3)
+4. **Dataset description** (Q4)
+5. **Clustering lens** (Q5)
+6. **Cluster count range** (Q6)
+7. **Model tier** (Q7)
 
-Questions 4 and 5 are the two answers that actually shape the result, and both
-are **entirely the user's call** — you are not offering a menu they must pick
-from. Ask each with AskUserQuestion so the run stops and waits for a real
-answer, and make the free-text escape hatch explicit in the question itself.
+Every answer is **entirely the user's call** — you are not offering a menu
+they must pick from, and the questions say so where it matters.
 
-**Render both through the AskUserQuestion tool. Do not reproduce the options as
-a markdown table or a bulleted list in your reply** — the tool call is what
-makes the run stop and wait for the user. Writing the options out as prose is
-the failure mode to avoid, not a lighter-weight alternative to the tool.
+Rules that apply to every question:
 
-**Do not call `init.py` until the user has answered both 4 and 5.** There is no
-default for either. "No instructions" is a valid answer, but only when the user
-actually chooses it — never when they simply haven't replied yet.
+- **One at a time.** One AskUserQuestion call per question, in the order
+  above, waiting for the answer before asking the next.
+- **Render through the AskUserQuestion tool. Do not reproduce the options as
+  a markdown table or a bulleted list in your reply** — the tool call is what
+  makes the run stop and wait for the user. Writing the options out as prose
+  is the failure mode to avoid, not a lighter-weight alternative to the tool.
+  (Headless/scripted invocations that already supply the answers skip the
+  asking entirely — AskUserQuestion is unavailable in `-p` mode.)
+- **Skip what's already answered.** If the user's invocation or an earlier
+  answer already supplies an item (users may volunteer several at once), skip
+  that question. If everything is supplied, ask nothing — confirm the
+  configuration in one line and proceed to init.
+- **Fixed text is verbatim.** Question text, headers, and the fixed options
+  below are pinned — do not paraphrase, shorten, or expand them. Where options
+  are marked *(drafted)*, draft them fresh from the actual project/corpus as
+  described. The single allowed substitution is `<session model>` in Q7:
+  replace it with the model named in your environment context (e.g.
+  "Opus 4.7").
+- **Never mark any option "(Recommended)".** Where there is a default it is
+  named in the option label; nothing else is ranked.
+- **Do not call `init.py` until all seven are answered.** Opt-out picks
+  ("No description", "No instructions") count as answers; silence does not.
+- **Follow-ups** get answered from the facts in this section — never invent a
+  default that doesn't exist. Q2, Q3, and Q6 are required by init.py and have
+  no defaults.
 
-#### Asking for the range
+#### Q1 — Workspace
 
-Ask via AskUserQuestion with exactly these options. Do not invent your own
-buckets, do not narrow them, and do not derive a range from corpus size —
-corpus stats set sample sizes, not taxonomy granularity. A 200-text corpus can
-warrant 40 fine-grained categories; a 50,000-text one can warrant 5. Do not
-mark any option "(Recommended)": there is no default here, and the ordering is
-ascending, not a preference ranking.
+- **question**: "Where should the clustering workspace live? This is where the
+  run's working files and outputs (proposals, audits, state, the final
+  summary) are written."
+- **header**: "Workspace"
+- **options**:
+  - `./clustering/ (default)` — "A clustering/ directory at the project root."
+  - `.claude/clustering/` — "Hidden away inside the project's .claude
+    directory."
 
-- **question**: "How many clusters do you want? Min and max are entirely your
-  call — these are just ballparks, so pick Other and type any exact range you
-  like (e.g. '25-40', '4-6', '80-150')."
+#### Q2 — Corpus path
+
+Before asking, scan the project for plausible corpus files (`*.csv`,
+`*.json`, `*.jsonl`; ignore workspace/config directories like `.claude/` and
+`clustering/`). Offer up to 4 as options.
+
+- **question**: "Where is your corpus? Give the path to the CSV, JSON, or
+  JSONL file containing your texts."
+- **header**: "Corpus"
+- **options**: *(drafted)* the candidate files found, one per option, the
+  path as the label. If the scan finds no candidates, ask the same question
+  as plain text instead (the only sanctioned prose fallback in this flow).
+
+#### Q3 — Text column
+
+Read the corpus header (or first record) first. If it has exactly one
+column/field, skip this question and use it (note that in your reply).
+
+- **question**: "Which column or field in that file holds the text to
+  cluster?"
+- **header**: "Text column"
+- **options**: *(drafted)* the actual column/field names, most text-like
+  first (up to 4; Other covers the rest).
+
+#### Q4 — Dataset description
+
+Read ~15 rows from the corpus file directly (Bash/Read on the path the user
+gave — `init.py` hasn't run yet, so `sample.py` isn't available). Reuse this
+peek for Q5. From it, draft 2–3 candidate one-sentence descriptions of what
+the texts are. If the corpus is unreadable or too opaque to draft from, fall
+back to generic candidates rather than blocking on it.
+
+- **question**: "What are these texts? One sentence of context is carried
+  into every agent dispatch. The options are drafted from a peek at your
+  corpus — pick Other to write your own."
+- **header**: "Dataset"
+- **options** (first is always the opt-out):
+  - `No description` — "Skip — agents will infer context from the texts
+    themselves."
+  - *(drafted)* 2–3 candidate descriptions, e.g. "Customer support tickets
+    for an online retailer." — full sentence as the description, a short
+    handle as the label. Never reuse this example verbatim; it illustrates
+    the format, not the content.
+
+#### Q5 — Clustering lens
+
+From the same ~15-row peek, draft 3 lenses that are genuinely plausible *for
+this corpus*. Never reuse the examples below verbatim; they illustrate the
+format, not the content.
+
+- **question**: "What should the texts be grouped by? Entirely your call —
+  the same corpus often supports several groupings (academic abstracts could
+  be clustered by topic, by methodology, or by dataset used), and your
+  instructions pick the lens. The options are illustrations drawn from your
+  corpus; pick Other to name any lens you like."
+- **header**: "Lens"
+- **options** (first is always the opt-out):
+  - `No instructions` — "Agents discover whatever structure is most salient
+    in the data."
+  - *(drafted)* 3 corpus-drawn lenses — a short handle as the label, a
+    one-sentence instruction as the description, e.g. `Issue type` — "Group
+    texts by the type of issue the customer is raising."
+
+The label is a handle, not the instruction. When the user picks a lens
+option, its **description** is what flows into `--instructions` — never the
+label. "Issue type" is not a usable instruction; the sentence is.
+
+**Assembling `--instructions`**: concatenate whichever parts exist — the Q4
+sentence + the Q5 lens sentence (e.g. "Customer support tickets for an online
+retailer. Group texts by the type of issue the customer is raising."). If one
+was skipped, use the other alone; if both were skipped, pass the empty
+string.
+
+#### Q6 — Cluster count range
+
+Ask with exactly these options. Do not invent your own buckets, do not narrow
+them, and never derive or propose a range yourself — not from corpus size,
+not from the peeked rows, not even if the user asks you to choose. Corpus
+stats set sample sizes, not taxonomy granularity: a 200-text corpus can
+warrant 40 fine-grained categories; a 50,000-text one can warrant 5. If the
+user asks you to pick, explain that the range is theirs to set and re-ask.
+The ordering is ascending, not a preference ranking.
+
+- **question**: "What range should the cluster count land in? This is the
+  granularity control — within your range, the agents settle on the count the
+  data actually supports. Min and max are entirely your call and the options
+  below are just ballparks: pick Other and type any exact range you like
+  (e.g. '4–6', '25–40', '80–150'). The range is a target, not an exact
+  promise — when unsure, go wide."
 - **header**: "Range"
 - **options**:
-  - `Broad: 2-8` — "A handful of high-level themes. Right when the output is a
-    summary or a report."
-  - `Working: 10-25` — "Enough granularity for a human coding scheme or
-    qualitative analysis."
-  - `Fine: 30-60` — "Closer to a labelled category list — routing, tagging,
-    downstream classification."
+  - `Broad: 2–8` — "A few headline groups"
+  - `Mid: 10–30` — "A codebook-sized scheme"
+  - `Fine: 60–150` — "A detailed classification"
 
-The three options above are the AskUserQuestion payload, not a table to print.
-
-If the user picks a bucket, record its numbers verbatim as min/max. If they use
-Other, accept whatever they give, however wide or narrow — `5-80` is a
+If the user picks a bucket, record its numbers verbatim as min/max. If they
+use Other, accept whatever they give, however wide or narrow — `5–80` is a
 legitimate answer and means "search broadly, I'll narrow on a rerun".
 
-#### Asking for the instructions
+#### Q7 — Model tier
 
-This is a free-text lens telling every agent what to pay attention to. It's the
-single highest-leverage input: the same corpus clusters completely differently
-depending on what you ask for.
-
-First, read ~15 rows from the corpus file directly (Bash/Read on the path the
-user gave — `init.py` hasn't run yet, so `sample.py` isn't available). Use them
-to draft 3 lenses that are genuinely plausible *for this corpus*. Never reuse
-the examples below verbatim; they illustrate the format, not the content. If
-the corpus is unreadable or the texts are too opaque to draft from, fall back
-to generic lenses rather than blocking on it.
-
-- **question**: "What should the agents pay attention to when forming clusters?
-  Entirely your call — the options below are just illustrations drawn from your
-  corpus. Pick Other to write your own lens in a sentence; anything you can
-  express in one is valid."
-- **header**: "Lens"
-- **options** (first is always the opt-out; do not mark any "(Recommended)"):
-  - `No instructions` — "Agents discover whatever structure is most salient in
-    the data. A reasonable start, but rarely the exact lens you wanted."
-  - `Problem type` — "cluster by the type of problem the respondent describes"
-  - `Sentiment` — "group by sentiment and tone, not topic"
-  - `Actionability` — "focus on actionable categories a support team could
-    route tickets to"
-
-The four options above are the AskUserQuestion payload, not a table to print.
-
-The label is a handle, not the instruction. When the user picks one of the lens
-options, pass its **description** verbatim as `--instructions` — never the
-label. "Problem type" is not a usable instruction; the sentence is.
+- **question**: "Which model tier should the agents run on? quality (the
+  default) runs every agent on the same model as this session
+  (<session model>); balanced moves the high-volume reading agents
+  (proposers, auditor) to Haiku; economy runs all agents on Haiku."
+- **header**: "Model tier"
+- **options**:
+  - `quality (default)` — "Every agent on <session model>."
+  - `balanced` — "Proposers and auditor on Haiku; synthesizer, investigator,
+    critic on <session model>."
+  - `economy` — "All agents on Haiku."
 
 Then initialize:
 ```bash
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/init.py \
   --corpus <path> --text-col <col> --k-range <min> <max> \
   --model-tier <tier> --instructions "<instructions>" \
-  --workspace <dir> \
-  --max-texts-per-sample <n>  # optional hard cap
+  --workspace <dir>
 ```
+(`--max-texts-per-sample <n>` remains available as an advanced cost-control
+flag for very large corpora; don't ask about it — apply it only if the user
+raises it.)
 
 Set the env var for the *current* Bash call (note: env vars don't propagate
 across separate Bash tool calls and never reach hooks — later contexts resolve
