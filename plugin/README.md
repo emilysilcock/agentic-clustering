@@ -7,18 +7,20 @@ The workflow has two phases:
 1. **Discover** a cluster taxonomy from a sample of the corpus.
 2. **Classify** the full corpus into that taxonomy, optionally tuning the classifier against hand labels first.
 
+
 ## Prerequisites
 
-Discovery (`/cluster-run`, `/cluster-status`, `/cluster-investigate`, `/cluster-finalize`) requires:
+Discovery requires:
 
 - [`uv`](https://docs.astral.sh/uv/). The skill scripts run via `uv run` and resolve their own dependencies (PEP 723), so no manual `pip install` is needed.
 
-Classification, labelling, and tuning (`/classify-run`, `/classify-tune`, `/classify-label`) additionally require an API key:
+Classification additionally requires an API key:
 
 - `OPENAI_API_KEY` (the default; uses GPT-5-mini, which is cheap and fast), or
 - `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5).
 
 The classify commands come from the [`text-classification`](https://github.com/emilysilcock/text-classification) plugin, which is installed automatically as a hard dependency of this plugin. You do not need to install it separately.
+
 
 ## Installation
 
@@ -29,16 +31,15 @@ The plugin is installed through Claude Code's plugin marketplace. From a directo
 /plugin install agentic-clustering@econ-nlp-plugins
 ```
 
-This auto-installs `text-classification` alongside it.
 
 ## Quick start
 
 The normal workflow is two commands. Everything else in this README is optional detail.
 
-1. **`/cluster-run`** — answer the seven setup questions, then step away.
+1. **`/cluster-run`** — creates a taxonomy of clusters.
 
-   - The questions cover where the workspace should live, which file and column hold your texts, what the texts are, what to group them by, how many clusters you want, and which model tier to use.
-   - Two of the questions do most of the work: the **cluster-count range** and the **clustering lens**. Both offer presets, and you can always pick Other and write your own. See [The setup questions in detail](#the-setup-questions-in-detail).
+   - The plugin will start by asking you seven question, covering where the workspace should live, which file and column hold your texts, what the texts are, what to group them by, how many clusters you want, and which model tier to use. See [The setup questions in detail](#the-setup-questions-in-detail).
+   - Two of the questions do most of the work: the **cluster-count range** and the **clustering lens**. Both offer presets, but we recommend picking Other and writing your own.  
    - The loop runs unattended. The orchestrator samples, proposes, synthesizes, audits, investigates, and critiques on its own; nudging it between iterations is usually counterproductive.
    - When the run converges, it suggests finalizing. Reply "go ahead" and it runs a final review, then exports `taxonomy.md` (human-readable), `final_taxonomy.json` (structured), and `categories.json` (the input for step 2). The `/cluster-finalize` command does the same thing from a later session.
 
@@ -47,9 +48,10 @@ The normal workflow is two commands. Everything else in this README is optional 
    - This step needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`).
    - It writes a CSV with a cluster, a confidence score, and reasoning for each text.
 
+
 ## Worked example
 
-This example runs the full workflow end to end in about half an hour. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"* — the canonical Gallup MIP item — and falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
+This example runs the full workflow end to end in about half an hour. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"*  with responses that falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
 
 ### 1. The example corpus
 
@@ -65,7 +67,7 @@ id,text
 
 ### 2. Discover and finalize the taxonomy
 
-In a Claude Code session opened in a directory you trust, run:
+In a Claude Code session run:
 
 ```
 /cluster-run
@@ -83,7 +85,7 @@ The orchestrator will ask seven setup questions. For this run, use:
 | Cluster count range | `2–8` (the "Broad" preset) |
 | Model tier | `quality` (default) |
 
-The run takes on the order of 15–20 minutes on this corpus, since it dispatches six to seven proposers plus audit and critique passes. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence.
+The run takes around 15–20 minutes on this corpus, since it dispatches six to seven proposers plus audit and critique passes. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence.
 
 You can run **`/cluster-status`** at any time to check the live numbers.
 
@@ -120,7 +122,8 @@ It auto-detects `clustering/categories.json` from the step above, so you only ne
 
 The output is a timestamped CSV under `clustering/classification/classifications/run_<timestamp>.csv`, with one row per text: the assigned cluster id, the cluster name, a confidence score, and the model's reasoning. On this corpus, all 18 texts should land in `c1`/`c2`/`c3` matching the obvious theme.
 
-That is the full discover → finalize → classify loop. Swap in your own corpus and instructions to use it for real.
+Swap in your own corpus and instructions to use it for real.
+
 
 ## The setup questions in detail
 
