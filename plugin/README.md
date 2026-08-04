@@ -29,7 +29,7 @@ The plugin is installed through Claude Code's plugin marketplace. From a directo
 /plugin install agentic-clustering@econ-nlp-plugins
 ```
 
-This also installs `text-classification`.
+This auto-installs `text-classification` alongside it.
 
 ## Quick start
 
