@@ -39,85 +39,17 @@ claude --plugin-dir /path/to/agentic-clustering/plugin
 
 ## Quick start
 
-### Phase 1 — Discover a taxonomy
+Three commands. Everything else in this README is optional detail.
 
-1. **`/cluster-run`** — point it at your corpus (a CSV/JSON/JSONL file + the text column). It asks seven setup questions: where the workspace should live, the corpus path, the text column, a one-sentence dataset description, what to group the texts by (e.g. *"cluster by issue type"*, *"group by sentiment"*), a target cluster-count range, and a model tier. The model tier is the cost knob: `quality` (the default) runs every agent on the same model as your session, `balanced` moves the high-volume reading agents (proposers, auditor) to Haiku, and `economy` runs all agents on Haiku. It then runs an iterative loop of specialised agents (proposer → synthesizer → auditor → investigator → critic), writing all working state to the workspace.
-2. **`/cluster-status`** — check progress at any time (cluster count, coverage, confidence, cross-proposal agreement).
-3. **`/cluster-investigate`** — dig into a specific cluster or question (the orchestrator also does this automatically; use this to steer it).
-4. **`/cluster-finalize`** — runs a final auditor + critic review and exports:
-   - `taxonomy.md` — the human-readable taxonomy
-   - `final_taxonomy.json` — the same, for programmatic use
-   - `categories.json` — the structured category definitions consumed by the classify commands below
+1. **`/cluster-run`** — answer the seven setup questions (where the workspace goes, which file and column your texts are in, what the texts are, what to group them by, how many clusters you want, which model tier), then **step away**. The loop runs unattended: the orchestrator samples texts, dispatches proposers, synthesizes, audits, investigates, and critiques on its own, and converges without you — nudging it between iterations is usually counterproductive. Expect on the order of 15–20 minutes for a small corpus.
+2. **`/cluster-finalize`** — once the run reports convergence. Runs a final review, then exports the deliverables: `taxonomy.md` (human-readable), `final_taxonomy.json` (structured), and `categories.json` (the input for step 3).
+3. **`/classify-run`** — needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`). Applies the finalized taxonomy to **every** text in your corpus and writes a CSV with a cluster, a confidence score, and reasoning per text.
 
----
-
-**Once it starts, let it run.** `/cluster-run` is designed to work unattended. The orchestrator decides on its own when to pull a fresh sample, when to propose new clusters, when to merge or split them, and when to send an auditor, investigator, or critic after a weak spot — it converges without you. Answer the setup questions and step away; you don't need to nudge the loop between iterations, and doing so is usually counterproductive. Steps 2 and 3 are there if you want them, not because a normal run needs them — most runs go straight from `/cluster-run` to `/cluster-finalize`.
-
-#### The two answers that matter
-
-The setup questions are where you actually shape the result, and two of them do most of the work. `/cluster-run` **will** ask you both — and while each offers preset options, those are just starting points: pick Other and anything you can express in a sentence is a valid answer.
-
-**1. The cluster-count range.** You give a min and a max, not a fixed `k`; the loop searches within it. The range is a budget for how coarse or fine the taxonomy should be. The question offers three ballpark presets:
-
-| Range | What you get |
-|---|---|
-| `Broad: 2–8` | a handful of broad themes |
-| `Mid: 10–30` | a working taxonomy for a coding scheme |
-| `Fine: 60–150` | fine-grained, closer to a labelled category list |
-
-The presets are just ballparks — pick Other to type any exact range you like (e.g. `4–6`, `25–40`, `80–150`).
-
-Pick it from what you'll *do* with the clusters — a summary report needs far fewer than a ticket-routing system. If you genuinely don't know, give a wide range and narrow it on a second run once you've seen the first taxonomy.
-
-**2. The clustering lens.** What should the texts be grouped by — a free-text instruction telling every agent what to pay attention to. Optional, but the single highest-leverage input: the same corpus clusters completely differently depending on what you ask for. The run drafts a few candidate lenses from a peek at your corpus; pick one or write your own.
-
-```text
-cluster by the type of problem the respondent describes
-group by sentiment, not topic
-focus on actionable categories a support team could route tickets to
-distinguish by policy area; ignore which politician is mentioned
-split on the mechanism of harm described, not the industry
-```
-
-Your lens — combined with the one-sentence dataset description asked just before it — is carried into every proposer, synthesizer, auditor, investigator, and critic dispatch and acts as the **primary constraint** on cluster formation — say "cluster by issue type" and the agents won't cluster by sentiment. Skip it and they'll discover whatever structure is most salient in the data, which is a reasonable starting point but rarely the one you actually wanted. One sentence here is usually worth more than a longer run.
-
-Both answers are stored in the workspace's `state.json`, so resuming a session picks them back up. To try a different lens or a different granularity, start a fresh run — they're cheap to compare.
-
----
-
-### Phase 2 — Classify your corpus
-
-5. **`/classify-run`** — applies the finalized `categories.json` to a corpus, classifying **every** text into a category (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/classifications/`. Pick an execution mode:
-   - **`async`** — real-time, for small corpora (< ~1000 texts).
-   - **`batch`** — the provider's Batch API: **~50% cheaper**, takes minutes to hours (≤ 24h SLA), best for full-corpus runs.
-
-   Prompt caching is on by default, so cost drops sharply after the first call.
-
-   **Optional — tune accuracy first.** Before a full classification run, you can validate and improve the classifier against hand labels:
-   - **`/classify-label`** — walks you through a sample of texts one at a time; you assign each a category (or `none`). Produces a `labels.json` validation set.
-   - **`/classify-tune`** — generates several prompt-header variants, scores each against your labels, and recommends the best one (saved as `classification/header.md`). `/classify-run` picks it up automatically on the next run.
-
-   The classify commands auto-detect this workspace via the `.claude/clustering/.active_workspace` pointer, so no extra configuration is needed when you've just run `/cluster-finalize`.
-
-## Commands at a glance
-
-| Command | Phase | What it does | From |
-|---|---|---|---|
-| `/cluster-run` | discover | Iterative agentic discovery of clusters | this plugin |
-| `/cluster-status` | discover | Show progress on the current workspace | this plugin |
-| `/cluster-investigate` | discover | Investigate a specific cluster or question | this plugin |
-| `/cluster-finalize` | discover | Final review + export `taxonomy.md` / `final_taxonomy.json` / `categories.json` | this plugin |
-| `/cluster-report-issue` | any | File a GitHub issue against agentic-clustering with workspace context | this plugin |
-| `/classify-label` | tune | Hand-label a validation sample → `labels.json` | text-classification |
-| `/classify-tune` | tune | Tune the classification prompt against labels | text-classification |
-| `/classify-run` | classify | Classify a corpus into the taxonomy → CSV | text-classification |
-| `/classify-report-issue` | any | File a GitHub issue against text-classification | text-classification |
-
-Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-run` or `/text-classification:classify-run`, etc.
+Of the seven questions, two do most of the work: the **cluster-count range** (the granularity budget — you give a min and max, the loop settles on the count the data supports) and the **clustering lens** (one sentence saying what to group by, e.g. *"cluster by issue type"* — the same corpus clusters completely differently depending on the lens). Both offer presets; pick Other to write your own. See [Shaping the result](#shaping-the-result-the-two-answers-that-matter) for how to choose them well.
 
 ## Try it out — a worked example
 
-A small corpus you can run end-to-end in a few minutes to see the workflow in action. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"* — the canonical Gallup MIP item — and falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
+A small corpus you can run end-to-end in about half an hour to see the workflow in action. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"* — the canonical Gallup MIP item — and falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
 
 ### 1. Save the corpus
 
@@ -208,7 +140,84 @@ It auto-detects `clustering/categories.json` from the step above, so you only ne
 
 That's the full discover → finalize → classify loop. Swap in your own corpus and instructions to use it for real.
 
-## Where things live
+## Power users
+
+A normal run needs none of what follows — most runs go straight from `/cluster-run` to `/cluster-finalize` to `/classify-run`. This section is for shaping, steering, and scaling beyond the defaults.
+
+### Shaping the result: the two answers that matter
+
+The setup questions are where you actually shape the result, and two of them do most of the work. `/cluster-run` **will** ask you both — and while each offers preset options, those are just starting points: pick Other and anything you can express in a sentence is a valid answer.
+
+**1. The cluster-count range.** You give a min and a max, not a fixed `k`; the loop searches within it. The range is a budget for how coarse or fine the taxonomy should be. The question offers three ballpark presets:
+
+| Range | What you get |
+|---|---|
+| `Broad: 2–8` | a handful of broad themes |
+| `Mid: 10–30` | a working taxonomy for a coding scheme |
+| `Fine: 60–150` | fine-grained, closer to a labelled category list |
+
+The presets are just ballparks — pick Other to type any exact range you like (e.g. `4–6`, `25–40`, `80–150`).
+
+Pick it from what you'll *do* with the clusters — a summary report needs far fewer than a ticket-routing system. If you genuinely don't know, give a wide range and narrow it on a second run once you've seen the first taxonomy.
+
+**2. The clustering lens.** What should the texts be grouped by — a free-text instruction telling every agent what to pay attention to. Optional, but the single highest-leverage input: the same corpus clusters completely differently depending on what you ask for. The run drafts a few candidate lenses from a peek at your corpus; pick one or write your own.
+
+```text
+cluster by the type of problem the respondent describes
+group by sentiment, not topic
+focus on actionable categories a support team could route tickets to
+distinguish by policy area; ignore which politician is mentioned
+split on the mechanism of harm described, not the industry
+```
+
+Your lens — combined with the one-sentence dataset description asked just before it — is carried into every proposer, synthesizer, auditor, investigator, and critic dispatch and acts as the **primary constraint** on cluster formation — say "cluster by issue type" and the agents won't cluster by sentiment. Skip it and they'll discover whatever structure is most salient in the data, which is a reasonable starting point but rarely the one you actually wanted. One sentence here is usually worth more than a longer run.
+
+Both answers are stored in the workspace's `state.json`, so resuming a session picks them back up. To try a different lens or a different granularity, start a fresh run — they're cheap to compare.
+
+### Watching and steering a run
+
+- **`/cluster-status`** — check progress at any time (cluster count, coverage, confidence, cross-proposal agreement).
+- **`/cluster-investigate`** — dig into a specific cluster or question (the orchestrator also investigates automatically; use this to steer it, e.g. when you disagree with a call it made).
+
+The orchestrator decides on its own when to pull a fresh sample, when to propose new clusters, when to merge or split them, and when to send an auditor, investigator, or critic after a weak spot. These commands are there if you want them, not because a normal run needs them.
+
+### Choosing a model tier
+
+The model tier is the cost knob for discovery: `quality` (the default) runs every agent on the same model as your session, `balanced` moves the high-volume reading agents (proposers, auditor) to Haiku, and `economy` runs all agents on Haiku.
+
+### Classification: modes, cost, and tuning
+
+`/classify-run` offers two execution modes:
+
+- **`async`** — real-time, for small corpora (< ~1000 texts).
+- **`batch`** — the provider's Batch API: **~50% cheaper**, takes minutes to hours (≤ 24h SLA), best for full-corpus runs.
+
+Prompt caching is on by default, so cost drops sharply after the first call.
+
+**Tune accuracy first (optional).** Before a full classification run, you can validate and improve the classifier against hand labels:
+
+- **`/classify-label`** — walks you through a sample of texts one at a time; you assign each a category (or `none`). Produces a `labels.json` validation set.
+- **`/classify-tune`** — generates several prompt-header variants, scores each against your labels, and recommends the best one (saved as `classification/header.md`). `/classify-run` picks it up automatically on the next run.
+
+The classify commands auto-detect the clustering workspace via the `.claude/clustering/.active_workspace` pointer, so no extra configuration is needed when you've just run `/cluster-finalize`.
+
+### Commands at a glance
+
+| Command | Phase | What it does | From |
+|---|---|---|---|
+| `/cluster-run` | discover | Iterative agentic discovery of clusters | this plugin |
+| `/cluster-status` | discover | Show progress on the current workspace | this plugin |
+| `/cluster-investigate` | discover | Investigate a specific cluster or question | this plugin |
+| `/cluster-finalize` | discover | Final review + export `taxonomy.md` / `final_taxonomy.json` / `categories.json` | this plugin |
+| `/cluster-report-issue` | any | File a GitHub issue against agentic-clustering with workspace context | this plugin |
+| `/classify-label` | tune | Hand-label a validation sample → `labels.json` | text-classification |
+| `/classify-tune` | tune | Tune the classification prompt against labels | text-classification |
+| `/classify-run` | classify | Classify a corpus into the taxonomy → CSV | text-classification |
+| `/classify-report-issue` | any | File a GitHub issue against text-classification | text-classification |
+
+Commands may appear namespaced in the `/` menu as `/agentic-clustering:cluster-run` or `/text-classification:classify-run`, etc.
+
+### Where things live
 
 All state is written to the workspace you chose at setup — `./clustering/` at the root of the project you're analysing by default, or `.claude/clustering/` if you picked the hidden option. For any other location, pick Other on the workspace question, or set `CLUSTERING_WORKSPACE` before launching Claude Code.
 
