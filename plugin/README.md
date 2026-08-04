@@ -31,11 +31,17 @@ Through Claude Code's marketplace mechanism. From a directory you trust:
 
 This auto-installs `text-classification` alongside it.
 
+For local development from a clone of [the repo](https://github.com/emilysilcock/agentic-clustering):
+
+```
+claude --plugin-dir /path/to/agentic-clustering/plugin
+```
+
 ## Quick start
 
 ### Phase 1 — Discover a taxonomy
 
-1. **`/cluster-run`** — point it at your corpus (a CSV/JSON file + the text column). It asks for a target cluster-count range, optional clustering instructions (e.g. *"cluster by issue type"*, *"group by sentiment"*), and a model tier. It then runs an iterative loop of specialised agents (proposer → synthesizer → auditor → investigator → critic), writing all working state to `.claude/clustering/`.
+1. **`/cluster-run`** — point it at your corpus (a CSV/JSON/JSONL file + the text column). It asks seven setup questions: where the workspace should live, the corpus path, the text column, a one-sentence dataset description, what to group the texts by (e.g. *"cluster by issue type"*, *"group by sentiment"*), a target cluster-count range, and a model tier. The model tier is the cost knob: `quality` (the default) runs every agent on the same model as your session, `balanced` moves the high-volume reading agents (proposers, auditor) to Haiku, and `economy` runs all agents on Haiku. It then runs an iterative loop of specialised agents (proposer → synthesizer → auditor → investigator → critic), writing all working state to the workspace.
 2. **`/cluster-status`** — check progress at any time (cluster count, coverage, confidence, cross-proposal agreement).
 3. **`/cluster-investigate`** — dig into a specific cluster or question (the orchestrator also does this automatically; use this to steer it).
 4. **`/cluster-finalize`** — runs a final auditor + critic review and exports:
@@ -49,19 +55,21 @@ This auto-installs `text-classification` alongside it.
 
 #### The two answers that matter
 
-The setup questions are where you actually shape the result, and two of them do most of the work. `/cluster-run` **will** ask you both — the point is that **you** decide them, and you're not picking from a menu. Anything you can express in a sentence is a valid answer.
+The setup questions are where you actually shape the result, and two of them do most of the work. `/cluster-run` **will** ask you both — and while each offers preset options, those are just starting points: pick Other and anything you can express in a sentence is a valid answer.
 
-**1. The cluster-count range.** You give a min and a max, not a fixed `k`; the loop searches within it. The range is a budget for how coarse or fine the taxonomy should be:
+**1. The cluster-count range.** You give a min and a max, not a fixed `k`; the loop searches within it. The range is a budget for how coarse or fine the taxonomy should be. The question offers three ballpark presets:
 
 | Range | What you get |
 |---|---|
-| `2 6` | a handful of broad themes |
-| `10 20` | a working taxonomy for a coding scheme |
-| `30 60` | fine-grained, closer to a labelled category list |
+| `Broad: 2–8` | a handful of broad themes |
+| `Mid: 10–30` | a working taxonomy for a coding scheme |
+| `Fine: 60–150` | fine-grained, closer to a labelled category list |
+
+The presets are just ballparks — pick Other to type any exact range you like (e.g. `4–6`, `25–40`, `80–150`).
 
 Pick it from what you'll *do* with the clusters — a summary report needs far fewer than a ticket-routing system. If you genuinely don't know, give a wide range and narrow it on a second run once you've seen the first taxonomy.
 
-**2. The clustering instructions.** A free-text lens telling every agent what to pay attention to. Optional, but the single highest-leverage input: the same corpus clusters completely differently depending on what you ask for.
+**2. The clustering lens.** What should the texts be grouped by — a free-text instruction telling every agent what to pay attention to. Optional, but the single highest-leverage input: the same corpus clusters completely differently depending on what you ask for. The run drafts a few candidate lenses from a peek at your corpus; pick one or write your own.
 
 ```text
 cluster by the type of problem the respondent describes
@@ -71,7 +79,7 @@ distinguish by policy area; ignore which politician is mentioned
 split on the mechanism of harm described, not the industry
 ```
 
-Your instructions are carried into every proposer, synthesizer, auditor, investigator, and critic dispatch and act as the **primary constraint** on cluster formation — say "cluster by issue type" and the agents won't cluster by sentiment. Leave it blank and they'll discover whatever structure is most salient in the data, which is a reasonable starting point but rarely the one you actually wanted. One sentence here is usually worth more than a longer run.
+Your lens — combined with the one-sentence dataset description asked just before it — is carried into every proposer, synthesizer, auditor, investigator, and critic dispatch and acts as the **primary constraint** on cluster formation — say "cluster by issue type" and the agents won't cluster by sentiment. Skip it and they'll discover whatever structure is most salient in the data, which is a reasonable starting point but rarely the one you actually wanted. One sentence here is usually worth more than a longer run.
 
 Both answers are stored in the workspace's `state.json`, so resuming a session picks them back up. To try a different lens or a different granularity, start a fresh run — they're cheap to compare.
 
@@ -81,7 +89,7 @@ Both answers are stored in the workspace's `state.json`, so resuming a session p
 
 5. **`/classify-run`** — applies the finalized `categories.json` to a corpus, classifying **every** text into a category (with a confidence score and reasoning) and writing a timestamped CSV under `.claude/clustering/classification/classifications/`. Pick an execution mode:
    - **`async`** — real-time, for small corpora (< ~1000 texts).
-   - **`batch`** — the provider's Batch API: **~50% cheaper**, takes minutes–hours, best for full-corpus runs.
+   - **`batch`** — the provider's Batch API: **~50% cheaper**, takes minutes to hours (≤ 24h SLA), best for full-corpus runs.
 
    Prompt caching is on by default, so cost drops sharply after the first call.
 
@@ -89,7 +97,7 @@ Both answers are stored in the workspace's `state.json`, so resuming a session p
    - **`/classify-label`** — walks you through a sample of texts one at a time; you assign each a category (or `none`). Produces a `labels.json` validation set.
    - **`/classify-tune`** — generates several prompt-header variants, scores each against your labels, and recommends the best one (saved as `classification/header.md`). `/classify-run` picks it up automatically on the next run.
 
-   The classify commands auto-detect this workspace via `.claude/clustering/categories.json`, so no extra configuration is needed when you've just run `/cluster-finalize`.
+   The classify commands auto-detect this workspace via the `.claude/clustering/.active_workspace` pointer, so no extra configuration is needed when you've just run `/cluster-finalize`.
 
 ## Commands at a glance
 
@@ -145,18 +153,19 @@ In a Claude Code session opened in the directory containing `mip_responses.csv`:
 /cluster-run
 ```
 
-The orchestrator will ask a handful of questions. For this run, use:
+The orchestrator will ask seven setup questions. For this run, use:
 
-| Question | Answer |
+| Question | Example user answer |
 |---|---|
-| Where should the clustering workspace live? | *(press enter for the default)* |
-| Corpus path | `mip_responses.csv` |
-| Text column name | `text` |
-| Target cluster count range | `2 6` |
-| Clustering instructions | `cluster by the type of problem the respondent describes` |
-| Model tier | `quality` |
+| Where should the workspace live? | `./clustering/` (default) |
+| Where is your corpus? | `mip_responses.csv` |
+| Which column holds the text? | `text` |
+| What are these texts? | `survey responses on the most important problem facing the country` |
+| What should the texts be grouped by? | `cluster by the type of problem the respondent describes` |
+| Cluster count range | `2–8` (the "Broad" preset) |
+| Model tier | `quality` (default) |
 
-The run typically completes in 2–4 minutes. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence on this corpus.
+The run typically completes in a few minutes on this corpus. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence on this corpus.
 
 Use **`/cluster-status`** at any time to peek at the live numbers.
 
@@ -201,7 +210,7 @@ That's the full discover → finalize → classify loop. Swap in your own corpus
 
 ## Where things live
 
-All state is written to `.claude/clustering/` in the project you're analysing (override by setting `CLUSTERING_WORKSPACE` before launching Claude Code, or by answering `/cluster-run`'s "where should the workspace live?" prompt with a custom path).
+All state is written to the workspace you chose at setup — `./clustering/` at the root of the project you're analysing by default, or `.claude/clustering/` if you picked the hidden option. For any other location, pick Other on the workspace question, or set `CLUSTERING_WORKSPACE` before launching Claude Code.
 
 Whether or not you use a custom workspace, two tiny pointer files (`.plugin_root` and `.active_workspace`) always live at `.claude/clustering/` — they're how Claude Code hooks and subagent contexts find the real workspace location. Don't delete the `.claude/clustering/` directory to "clean up" after a custom-workspace run; the pointer files there are still load-bearing.
 
@@ -245,6 +254,43 @@ and click submit.
 ## How it works
 
 Discovery is an orchestrated loop of specialised subagents — proposer, synthesizer, auditor, investigator, critic — that converges on a stable, well-supported taxonomy with measured coverage and cross-proposal agreement. Classification then applies that taxonomy at scale through a cheap external model, with prompt caching and schema-enforced outputs so every text lands in a valid cluster.
+
+## This repository
+
+This README is the single source of documentation for the repo. The plugin itself lives in `plugin/` and is the only thing shipped to plugin users; the rest of the repository is the experimental evaluation for the paper introducing the method.
+
+```
+plugin/              the Claude Code plugin (this directory)
+  .claude-plugin/      plugin manifest (plugin.json)
+  skills/              plugin skills (cluster-run, cluster-investigate, etc.)
+  agents/              subagent definitions (proposer, synthesizer, auditor, investigator, critic)
+  hooks/               post-subagent validation + summary hooks
+benchmarking/        paper experiments — Python package for evaluating the plugin against baselines
+  data_processing/     HuggingFace download + preprocessing (see its README for the dataset loaders)
+  baselines/           prior clustering methods
+  evaluation/          shared metrics
+  experiments/         runner scripts (benchmark x method)
+slurm/               FASRC/SLURM harness for the GPU-bound baseline phases (see its README)
+data/                benchmark data (gitignored — downloaded from HuggingFace)
+results/             figures, tables, logs, predictions (gitignored)
+paper/               manuscript
+```
+
+### Paper experiments
+
+```bash
+uv sync
+uv run python -m benchmarking.experiments.<name>
+```
+
+Data-processing entry points should call `ensure_data_dirs()` from `benchmarking.paths` so `data/raw/` and `data/derived/` exist on a fresh clone:
+
+```python
+from benchmarking.paths import ensure_data_dirs, DATA_RAW
+ensure_data_dirs()
+```
+
+Two internal READMEs document harness details that don't belong here: [`benchmarking/data_processing/README.md`](../benchmarking/data_processing/README.md) (the 7 benchmark dataset loaders and their unified schema) and [`slurm/README.md`](../slurm/README.md) (running the ClusterLLM baseline's GPU phases on a SLURM cluster).
 
 ## Authors
 

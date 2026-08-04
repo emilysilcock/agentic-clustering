@@ -1,5 +1,8 @@
 # `benchmarking/data_processing/`
 
+> Internal harness doc. The main README for the plugin and the repo is
+> [`plugin/README.md`](../../plugin/README.md).
+
 Loaders for the 7 benchmark datasets defined in `paper/SPEC.md` §5.1. Each loader
 normalises its source into a unified schema and writes to `data/derived/<name>/`.
 Loaders are deterministic — every method in `benchmarking/experiments/` reads from

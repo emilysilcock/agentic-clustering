@@ -1,5 +1,8 @@
 # `slurm/` — ClusterLLM phases 0/1/3/4 on FASRC
 
+> Internal harness doc. The main README for the plugin and the repo is
+> [`plugin/README.md`](../plugin/README.md).
+
 This directory is the FASRC harness for the GPU-bound phases of ClusterLLM:
 
 - **Phase 0 (prep)**: encode each dataset with `hkunlp/instructor-large`.
