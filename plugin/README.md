@@ -165,7 +165,7 @@ The orchestrator will ask seven setup questions. For this run, use:
 | Cluster count range | `2–8` (the "Broad" preset) |
 | Model tier | `quality` (default) |
 
-The run typically completes in a few minutes on this corpus. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence on this corpus.
+The run takes on the order of 15–20 minutes on this corpus (it dispatches six to seven proposers plus audit and critique passes). You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence on this corpus.
 
 Use **`/cluster-status`** at any time to peek at the live numbers.
 
