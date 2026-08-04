@@ -41,11 +41,17 @@ claude --plugin-dir /path/to/agentic-clustering/plugin
 
 Three commands. Everything else in this README is optional detail.
 
-1. **`/cluster-run`** — answer the seven setup questions (where the workspace goes, which file and column your texts are in, what the texts are, what to group them by, how many clusters you want, which model tier), then **step away**. The loop runs unattended: the orchestrator samples texts, dispatches proposers, synthesizes, audits, investigates, and critiques on its own, and converges without you — nudging it between iterations is usually counterproductive. Expect on the order of 15–20 minutes for a small corpus.
-2. **`/cluster-finalize`** — the run suggests this itself once it converges, and saying "go ahead" is enough (the command is there for coming back in a later session). It runs a final review, then exports the deliverables: `taxonomy.md` (human-readable), `final_taxonomy.json` (structured), and `categories.json` (the input for step 3).
-3. **`/classify-run`** — needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`). Applies the finalized taxonomy to **every** text in your corpus and writes a CSV with a cluster, a confidence score, and reasoning per text.
-
-Of the seven questions, two do most of the work: the **cluster-count range** (the granularity budget — you give a min and max, the loop settles on the count the data supports) and the **clustering lens** (one sentence saying what to group by, e.g. *"cluster by issue type"* — the same corpus clusters completely differently depending on the lens). Both offer presets; pick Other to write your own. See [Shaping the result](#shaping-the-result-the-two-answers-that-matter) for how to choose them well.
+1. **`/cluster-run`** — answer the seven setup questions, then **step away**.
+   - The questions: where the workspace goes, which file and column your texts are in, what the texts are, what to group them by, how many clusters you want, and which model tier.
+   - Two of them do most of the work: the **cluster-count range** (the granularity budget — you give a min and max, the loop settles on the count the data supports) and the **clustering lens** (one sentence saying what to group by, e.g. *"cluster by issue type"* — the same corpus clusters completely differently depending on the lens). Both offer presets; pick Other to write your own. See [Shaping the result](#shaping-the-result-the-two-answers-that-matter).
+   - The loop runs unattended: the orchestrator samples, proposes, synthesizes, audits, investigates, and critiques on its own — nudging it between iterations is usually counterproductive.
+   - Expect on the order of 15–20 minutes for a small corpus.
+2. **`/cluster-finalize`** — the run suggests this itself once it converges; saying "go ahead" is enough.
+   - Runs a final review, then exports `taxonomy.md` (human-readable), `final_taxonomy.json` (structured), and `categories.json` (the input for step 3).
+   - The command exists for coming back to a converged run in a later session.
+3. **`/classify-run`** — applies the finalized taxonomy to **every** text in your corpus.
+   - Needs an API key: `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`.
+   - Writes a CSV with a cluster, a confidence score, and reasoning per text.
 
 ## Try it out — a worked example
 
