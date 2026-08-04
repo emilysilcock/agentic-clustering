@@ -38,20 +38,22 @@ The normal workflow is two commands. Everything else in this README is optional 
 
 1. **`/cluster-run`** — creates a taxonomy of clusters.
 
-   - The plugin will start by asking you seven question, covering where the workspace should live, which file and column hold your texts, what the texts are, what to group them by, how many clusters you want, and which model tier to use. See [The setup questions in detail](#the-setup-questions-in-detail).
+   - The plugin will start by asking you seven questions, covering where the workspace should live, which file and column hold your texts, what the texts are, what to group them by, how many clusters you want, and which model tier to use. See [The setup questions in detail](#the-setup-questions-in-detail).
    - Two of the questions do most of the work: the **cluster-count range** and the **clustering lens**. Both offer presets, but we recommend picking Other and writing your own.  
-   - The loop runs unattended. The orchestrator samples, proposes, synthesizes, audits, investigates, and critiques on its own; nudging it between iterations is usually counterproductive.
+   - The loop runs unattended. The orchestrator samples, proposes, synthesizes, audits, investigates, and critiques on its own, and does not need input between iterations.
    - When the run converges, it suggests finalizing. Reply "go ahead" and it runs a final review, then exports `taxonomy.md` (human-readable), `final_taxonomy.json` (structured), and `categories.json` (the input for step 2). The `/cluster-finalize` command does the same thing from a later session.
 
 2. **`/classify-run`** — apply the finalized taxonomy to every text in your corpus.
 
-   - This step needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`).
+   - This step needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`). It finds the taxonomy from step 1 automatically.
    - It writes a CSV with a cluster, a confidence score, and reasoning for each text.
+   - There are two execution modes: `async` classifies in real time and suits corpora under roughly 1,000 texts; `batch` uses the provider's Batch API, which is roughly 50% cheaper and takes minutes to hours (the SLA is 24 hours). Prompt caching is on by default, so cost drops sharply after the first call.
+   - The classifier can optionally be validated and tuned against hand labels first: `/classify-label` collects the labels, and `/classify-tune` scores several prompt variants against them and saves the best one, which `/classify-run` then uses automatically.
 
 
 ## Worked example
 
-This example runs the full workflow end to end in about half an hour. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"*  with responses that falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
+This example runs the full workflow end to end in about half an hour. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"*  with responses that fall into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
 
 ### 1. The example corpus
 
@@ -85,7 +87,7 @@ The orchestrator will ask seven setup questions. For this run, use:
 | Cluster count range | `2–8` (the "Broad" preset) |
 | Model tier | `quality` (default) |
 
-The run takes around 15–20 minutes on this corpus, since it dispatches six to seven proposers plus audit and critique passes. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. Expect roughly three clusters, ~100% coverage, and high mean confidence.
+The run takes around 15–20 minutes on this corpus, since it dispatches six to seven proposers plus audit and critique passes. You should see the orchestrator dispatch proposers, then a synthesizer, then an auditor and critic, iterating until coverage and cross-proposal agreement both look stable. The run should end with roughly three clusters, ~100% coverage, and high mean confidence.
 
 You can run **`/cluster-status`** at any time to check the live numbers.
 
@@ -118,7 +120,7 @@ With an API key set (`OPENAI_API_KEY` for GPT-5-mini, or `ANTHROPIC_API_KEY` for
 /classify-run
 ```
 
-It auto-detects `clustering/categories.json` from the step above, so you only need to confirm the corpus (the bundled example you used in step 2) and the text column (`text`). Pick `async` mode, since the corpus is tiny.
+It auto-detects `clustering/categories.json` from the step above, so you only need to confirm the corpus (the bundled example you used in step 2) and the text column (`text`). Use `async` mode; the corpus is small.
 
 The output is a timestamped CSV under `clustering/classification/classifications/run_<timestamp>.csv`, with one row per text: the assigned cluster id, the cluster name, a confidence score, and the model's reasoning. On this corpus, all 18 texts should land in `c1`/`c2`/`c3` matching the obvious theme.
 
@@ -127,7 +129,7 @@ Swap in your own corpus and instructions to use it for real.
 
 ## The setup questions in detail
 
-`/cluster-run` collects seven answers before it starts. Each question offers preset options, but the presets are only starting points: pick Other, and anything you can express in a sentence is a valid answer.
+`/cluster-run` collects seven answers before it starts. Each question offers preset options, but the presets are only starting points; picking Other allows any free-text answer.
 
 Two of the questions shape the result far more than the rest — the cluster-count range and the clustering lens.
 
@@ -143,11 +145,11 @@ You give a minimum and a maximum, not a fixed `k`, and the loop searches within 
 
 You can also pick Other and type any exact range you like, for example `4–6`, `25–40`, or `80–150`.
 
-Choose the range based on what you will *do* with the clusters — a summary report needs far fewer than a ticket-routing system. If you genuinely do not know, give a wide range and narrow it on a second run once you have seen the first taxonomy.
+A useful heuristic is to work back from what the clusters are for: a summary report needs far fewer than a ticket-routing system. A wide range on a first run can be narrowed on a second run once the first taxonomy is in hand.
 
 ### The clustering lens
 
-The lens is a free-text instruction that tells every agent what to group the texts by. It is optional, but it is the single highest-leverage input: the same corpus clusters completely differently depending on what you ask for. The run drafts a few candidate lenses from a peek at your corpus; pick one, or write your own.
+The lens is a free-text instruction that tells every agent what to group the texts by. It is optional, but it has a large effect on the result: the same corpus clusters very differently under different lenses. The run drafts a few candidate lenses from a peek at your corpus; pick one, or write your own.
 
 ```text
 cluster by the type of problem the respondent describes
@@ -159,9 +161,9 @@ split on the mechanism of harm described, not the industry
 
 Your lens is combined with the one-sentence dataset description asked just before it, carried into every proposer, synthesizer, auditor, investigator, and critic dispatch, and acts as the primary constraint on cluster formation. If you say "cluster by issue type", the agents will not cluster by sentiment.
 
-If you skip the lens, the agents discover whatever structure is most salient in the data. That is a reasonable starting point, but it is rarely the one you actually wanted; one sentence here is usually worth more than a longer run.
+Without a lens, the agents group by whatever structure is most salient in the data, which may not be the grouping you had in mind.
 
-Both answers are stored in the workspace's `state.json`, so resuming a session picks them back up. To try a different lens or a different granularity, start a fresh run — runs are cheap to compare.
+Both answers are stored in the workspace's `state.json` and are picked up again when a session resumes. Trying a different lens or a different granularity means starting a fresh run.
 
 ### The model tier
 
@@ -173,22 +175,6 @@ The orchestrator decides on its own when to pull a fresh sample, when to propose
 
 - **`/cluster-status`** — check progress at any time (cluster count, coverage, confidence, cross-proposal agreement).
 - **`/cluster-investigate`** — dig into a specific cluster or question. The orchestrator also investigates automatically; use this to steer it, for example when you disagree with a call it made.
-
-## Classification options and tuning
-
-`/classify-run` offers two execution modes:
-
-- **`async`** — real-time, for small corpora (fewer than roughly 1,000 texts).
-- **`batch`** — the provider's Batch API. It is roughly 50% cheaper and takes minutes to hours (the SLA is 24 hours), which suits full-corpus runs.
-
-Prompt caching is on by default, so cost drops sharply after the first call.
-
-Before a full classification run, you can optionally validate and improve the classifier against hand labels:
-
-- **`/classify-label`** — walks you through a sample of texts one at a time; you assign each a category (or `none`). It produces a `labels.json` validation set.
-- **`/classify-tune`** — generates several prompt-header variants, scores each against your labels, and recommends the best one (saved as `classification/header.md`). `/classify-run` picks it up automatically on the next run.
-
-The classify commands auto-detect the clustering workspace via the `.claude/clustering/.active_workspace` pointer, so no extra configuration is needed after `/cluster-finalize`.
 
 ## Power users: commands at a glance
 
@@ -210,7 +196,7 @@ Commands may appear namespaced in the `/` menu, for example as `/agentic-cluster
 
 All state is written to the workspace you chose at setup: `./clustering/` at the root of the project you are analysing by default, or `.claude/clustering/` if you picked the hidden option. For any other location, pick Other on the workspace question, or set `CLUSTERING_WORKSPACE` before launching Claude Code.
 
-Whether or not you use a custom workspace, two small pointer files (`.plugin_root` and `.active_workspace`) always live at `.claude/clustering/`. They are how Claude Code hooks and subagent contexts find the real workspace location, so do not delete the `.claude/clustering/` directory to "clean up" after a custom-workspace run — the pointer files there are still load-bearing.
+Whether or not you use a custom workspace, two small pointer files (`.plugin_root` and `.active_workspace`) always live at `.claude/clustering/`. They are how Claude Code hooks, subagent contexts, and the classify commands find the real workspace location, which is why no extra configuration is needed between the discover and classify phases. Deleting the `.claude/clustering/` directory after a custom-workspace run breaks this detection.
 
 **During discovery** (between `/cluster-run` and `/cluster-finalize`):
 
