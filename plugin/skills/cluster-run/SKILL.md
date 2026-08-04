@@ -367,10 +367,10 @@ After every 2-3 agent dispatches, update the user:
 
 **Hard checkpoint**: After 20 agent dispatches without explicit user input,
 STOP and report. Don't keep going — the user should confirm direction.
-The baseline P→S→A→C cycle is 6 dispatches (3 proposers + synth + auditor +
-critic); the remaining budget is for Investigator passes (each typically
-costs ~2 slots, since a structural change resets coverage and warrants a
-re-audit) and any follow-up proposer / synth refinements.
+The baseline P→S→A→C cycle is 9-10 dispatches (6-7 proposers + synth +
+auditor + critic); the remaining budget is for Investigator passes (each
+typically costs ~2 slots, since a structural change resets coverage and
+warrants a re-audit) and any follow-up proposer / synth refinements.
 
 ## Before Stopping
 

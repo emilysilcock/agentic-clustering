@@ -51,8 +51,9 @@ fi
 8. Tell the user the phase-2 commands are available: `/classify-label`,
    `/classify-tune`, `/classify-run` — they pick up `categories.json`
    automatically because text-classification is installed as a hard
-   dependency of this plugin and its workspace auto-detection sees
-   `.claude/clustering/categories.json`.
+   dependency of this plugin and its workspace auto-detection follows the
+   `.claude/clustering/.active_workspace` pointer to this workspace's
+   `categories.json`.
 9. Confirm the workspace is clean: after finalization, the workspace root
    contains the output artifacts (`taxonomy.md`, `final_taxonomy.json`,
    `categories.json`), `state.json`, `corpus.json` (kept as a reference for

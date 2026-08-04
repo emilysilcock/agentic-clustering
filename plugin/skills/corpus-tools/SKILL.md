@@ -176,9 +176,10 @@ classification, labelling, and prompt tuning happen via the
 [text-classification](https://github.com/emilysilcock/text-classification)
 plugin, which is installed automatically as a hard dependency of this
 plugin. Its skills (`/classify-run`, `/classify-tune`, `/classify-label`,
-`/classify-report-issue`) auto-detect this workspace by probing for
-`.claude/clustering/categories.json`, so no manual configuration is
-needed — finalize finishes and the classify commands "just work".
+`/classify-report-issue`) auto-detect this workspace via the
+`.claude/clustering/.active_workspace` pointer (falling back to probing
+`.claude/clustering/categories.json` directly), so no manual configuration
+is needed — finalize finishes and the classify commands "just work".
 
 Anything you used to do via `/cluster-classify`, `/cluster-tune`, or
 `/cluster-label` is now done by the corresponding `/classify-*` command;
