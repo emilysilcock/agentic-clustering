@@ -128,6 +128,15 @@ Before asking, scan the project for plausible corpus files (`*.csv`,
   path as the label. If the scan finds no candidates, ask the same question
   as plain text instead (the only sanctioned prose fallback in this flow).
 
+The plugin bundles a demo corpus at
+`$CLAUDE_PLUGIN_ROOT/examples/mip_responses.csv` (18 short survey responses;
+the README's worked example uses it). When the user's answer refers to it —
+`examples/mip_responses.csv`, "the example corpus", "the bundled demo" —
+pass the full `$CLAUDE_PLUGIN_ROOT/examples/mip_responses.csv` path to
+`--corpus` and to the Q3/Q4 peeks: the relative path does not exist in the
+user's project. If the scan finds no candidates, mention in the plain-text
+fallback that this demo corpus is available.
+
 #### Q3 — Text column
 
 Read the corpus header (or first record) first. If it has exactly one
