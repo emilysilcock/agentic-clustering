@@ -54,35 +54,25 @@ Two commands. Everything else in this README is optional detail.
 
 A small corpus you can run end-to-end in about half an hour to see the workflow in action. The corpus is 18 open-ended survey responses to *"What is the most important problem facing the country today?"* — the canonical Gallup MIP item — and falls into three clear themes (economy, healthcare, climate). Discovery should converge on `k = 3` with high cross-proposal agreement.
 
-### 1. Save the corpus
+### 1. Get the example corpus
 
-Save the following as `mip_responses.csv` in any directory you trust:
+The corpus ships with the plugin. In a Claude Code session opened in a directory you trust, ask:
+
+> Copy the agentic-clustering example corpus (`examples/mip_responses.csv` in the plugin) into this directory
+
+The file has two columns (`id`, `text`):
 
 ```csv
 id,text
 1,"Wages haven't kept up with the cost of groceries and rent for years."
-2,"I can barely afford gas and basic bills, prices keep climbing."
-3,"Good jobs are disappearing from my town and nothing is replacing them."
-4,"Inflation is eating away at every paycheck I bring home."
-5,"Young people can't afford houses anymore, the economy is broken."
-6,"Stagnant wages and rising prices, that's what's killing the middle class."
-7,"Insurance premiums keep going up and the coverage keeps getting worse."
 8,"I had to skip my medication last month because I couldn't afford it."
-9,"Hospital bills are bankrupting families even with so-called good insurance."
-10,"Prescription drug prices in this country are completely out of control."
-11,"My doctor's appointment took six months to schedule, the system is overwhelmed."
-12,"Mental health care is impossible to access unless you're wealthy."
-13,"The wildfires near my home get worse every single year now."
 14,"We're not doing anything serious about climate change before it's too late."
-15,"Water quality where I live has been deteriorating for a decade."
-16,"Extreme weather keeps destroying communities and we just rebuild and wait for the next one."
-17,"Air pollution near the highways is making my kids sick."
-18,"Future generations will inherit a planet we made unlivable, and we know it."
+…
 ```
 
-### 2. Discover the taxonomy
+### 2. Discover and finalize the taxonomy
 
-In a Claude Code session opened in the directory containing `mip_responses.csv`:
+In the same session:
 
 ```
 /cluster-run
@@ -104,13 +94,7 @@ The run takes on the order of 15–20 minutes on this corpus (it dispatches six 
 
 Use **`/cluster-status`** at any time to peek at the live numbers.
 
-### 3. Finalize the taxonomy
-
-```
-/cluster-finalize
-```
-
-This dispatches a final auditor + critic, then exports three artifacts in the workspace (`./clustering/` by default):
+When the run converges, it suggests finalizing — say **"go ahead"**. This dispatches a final auditor + critic, then exports three artifacts in the workspace (`./clustering/` by default):
 
 - `taxonomy.md` — the human-readable taxonomy with a short description and example texts per cluster
 - `final_taxonomy.json` — the same content, structured
@@ -131,7 +115,7 @@ Difficulty affording insurance, prescriptions, and timely medical care …
 Worsening wildfires, extreme weather, pollution, and long-term climate risk …
 ```
 
-### 4. Classify the corpus into the taxonomy
+### 3. Classify the corpus into the taxonomy
 
 With an API key set (`OPENAI_API_KEY` for GPT-5-mini, or `ANTHROPIC_API_KEY` for Haiku 4.5):
 
