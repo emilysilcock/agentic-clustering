@@ -10,14 +10,7 @@ The workflow has two phases:
 
 ## Prerequisites
 
-Discovery requires:
-
 - [`uv`](https://docs.astral.sh/uv/). The skill scripts run via `uv run` and resolve their own dependencies (PEP 723), so no manual `pip install` is needed.
-
-Classification additionally requires an API key:
-
-- `OPENAI_API_KEY` (the default; uses GPT-5-mini, which is cheap and fast), or
-- `ANTHROPIC_API_KEY` (uses Claude Haiku 4.5).
 
 The classify commands come from the [`text-classification`](https://github.com/emilysilcock/text-classification) plugin, which is installed automatically as a hard dependency of this plugin. You do not need to install it separately.
 
@@ -45,10 +38,10 @@ The normal workflow is two commands. Everything else in this README is optional 
 
 2. **`/classify-run`** — apply the finalized taxonomy to every text in your corpus.
 
-   - This step needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`). It finds the taxonomy from step 1 automatically.
-   - It writes a CSV with a cluster, a confidence score, and reasoning for each text.
-   - There are two execution modes: `async` classifies in real time and suits corpora under roughly 1,000 texts; `batch` uses the provider's Batch API, which is roughly 50% cheaper and takes minutes to hours (the SLA is 24 hours). Prompt caching is on by default, so cost drops sharply after the first call.
-   - The classifier can optionally be validated and tuned against hand labels first: `/classify-label` collects the labels, and `/classify-tune` scores several prompt variants against them and saves the best one, which `/classify-run` then uses automatically.
+   - It finds the taxonomy from step 1 automatically and writes a CSV with a cluster, a confidence score, and reasoning for each text.
+   - The default classifier is an LLM, which needs an API key (`OPENAI_API_KEY` or `ANTHROPIC_API_KEY`). There are two execution modes: `async` classifies in real time and suits corpora under roughly 1,000 texts; `batch` uses the provider's Batch API, which is roughly 50% cheaper and takes minutes to hours (the SLA is 24 hours). Prompt caching is on by default, so cost drops sharply after the first call.
+   - Prefer no API key, or a corpus too large to pay per text? `/classify-train` fine-tunes a small local classifier on a labelled sample (hand-labelled in a bundled Label Studio workflow, or LLM-labelled), and `/classify-run --provider local` then classifies the whole corpus on your own machine for free.
+   - The LLM classifier can optionally be validated and tuned against hand labels first: `/classify-label` collects the labels, and `/classify-tune` scores several prompt variants against them and saves the best one, which `/classify-run` then uses automatically.
 
 
 ## Worked example
@@ -187,6 +180,7 @@ The orchestrator decides on its own when to pull a fresh sample, when to propose
 | `/cluster-report-issue` | any | File a GitHub issue against agentic-clustering with workspace context | this plugin |
 | `/classify-label` | tune | Hand-label a validation sample → `labels.json` | text-classification |
 | `/classify-tune` | tune | Tune the classification prompt against labels | text-classification |
+| `/classify-train` | classify | Fine-tune a small local classifier; classify with no API cost | text-classification |
 | `/classify-run` | classify | Classify a corpus into the taxonomy → CSV | text-classification |
 | `/classify-report-issue` | any | File a GitHub issue against text-classification | text-classification |
 
