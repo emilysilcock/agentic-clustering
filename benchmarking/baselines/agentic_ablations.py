@@ -357,7 +357,11 @@ def run_synthonly(dataset_name: str, *, seed: int = 0, reuse_existing_classify: 
 # Ablation 2: no-task
 # --------------------------------------------------------------------------- #
 
-def _notask_orchestrator_prompt(*, workspace_dir, dataset, k_min, k_max, allow_none) -> str:
+def _notask_orchestrator_prompt(
+    *, workspace_dir, dataset, k_min, k_max, allow_none,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
+) -> str:
     """Reuse the production orchestrator prompt verbatim, then strip the one
     dataset-identity phrase. We assert the phrase is present so a future change
     to the production prompt fails loudly rather than silently leaking the
@@ -368,6 +372,8 @@ def _notask_orchestrator_prompt(*, workspace_dir, dataset, k_min, k_max, allow_n
         k_min=k_min,
         k_max=k_max,
         allow_none=allow_none,
+        initial_proposers=initial_proposers,
+        max_agent_dispatches=max_agent_dispatches,
     )
     needle = f"the {dataset} benchmark dataset"
     if needle not in prompt:
@@ -378,13 +384,19 @@ def _notask_orchestrator_prompt(*, workspace_dir, dataset, k_min, k_max, allow_n
     return prompt.replace(needle, "an unlabelled text corpus")
 
 
-def _run_notask_orchestrator(*, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool) -> dict:
+def _run_notask_orchestrator(
+    *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
+) -> dict:
     prompt = _notask_orchestrator_prompt(
         workspace_dir=workspace_dir,
         dataset=dataset,
         k_min=k_min,
         k_max=k_max,
         allow_none=allow_none,
+        initial_proposers=initial_proposers,
+        max_agent_dispatches=max_agent_dispatches,
     )
     os.environ["CLUSTERING_WORKSPACE"] = str(workspace_dir)
     (workspace_dir / "orchestrator_prompt.txt").write_text(prompt, encoding="utf-8")
@@ -413,7 +425,14 @@ def _run_notask_orchestrator(*, workspace_dir: Path, dataset: str, k_min: int, k
     return {"wall_clock_s": t1 - t0, "stdout": stdout}
 
 
-def run_notask(dataset_name: str, *, seed: int = 0, resume_classify: bool = False) -> dict:
+def run_notask(
+    dataset_name: str,
+    *,
+    seed: int = 0,
+    resume_classify: bool = False,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
+) -> dict:
     """Ablation 2: full discover-k run with blank user instructions.
 
     ``resume_classify`` skips init + orchestrator and starts from the existing
@@ -473,6 +492,8 @@ def run_notask(dataset_name: str, *, seed: int = 0, resume_classify: bool = Fals
             k_min=k_min,
             k_max=k_max,
             allow_none=lens.allow_none,
+            initial_proposers=initial_proposers,
+            max_agent_dispatches=max_agent_dispatches,
         )
         print(f"[notask/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
         _ensure_orchestrator_outputs(workspace_dir)
@@ -568,7 +589,11 @@ def run_notask(dataset_name: str, *, seed: int = 0, resume_classify: bool = Fals
 # Ablation 3: no-k
 # --------------------------------------------------------------------------- #
 
-def _nok_orchestrator_prompt(*, workspace_dir, dataset, n_docs, allow_none) -> str:
+def _nok_orchestrator_prompt(
+    *, workspace_dir, dataset, n_docs, allow_none,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
+) -> str:
     """Reuse the production orchestrator prompt verbatim, then swap the k-clause.
 
     We build the prompt with the sentinel wide range [2, n_docs] (so the
@@ -587,6 +612,8 @@ def _nok_orchestrator_prompt(*, workspace_dir, dataset, n_docs, allow_none) -> s
         k_min=k_min,
         k_max=k_max,
         allow_none=allow_none,
+        initial_proposers=initial_proposers,
+        max_agent_dispatches=max_agent_dispatches,
     )
     # Reconstruct the exact range-case k-clause emitted by _orchestrator_prompt
     # for these sentinel bounds (is_fixed_k is False since 2 != n_docs).
@@ -607,18 +634,30 @@ def _nok_orchestrator_prompt(*, workspace_dir, dataset, n_docs, allow_none) -> s
         "natural number of clusters the corpus supports from the data and the "
         "task description alone; do NOT infer a target from the nominal k_range "
         "shown in summary.md (it is a non-binding sentinel spanning 2..N). "
-        "Use the initial proposer count the cluster-run skill specifies, and do "
-        "NOT scale it up on account of the wide nominal range."
+        + (
+            "Dispatch 2-3 proposers to start (matching the paper's proposer "
+            "regime); do NOT scale the proposer count up on account of the wide "
+            "nominal range."
+            if initial_proposers is not None
+            else "Use the initial proposer count the cluster-run skill specifies, "
+            "and do NOT scale it up on account of the wide nominal range."
+        )
     )
     return prompt.replace(needle, replacement)
 
 
-def _run_nok_orchestrator(*, workspace_dir: Path, dataset: str, n_docs: int, allow_none: bool) -> dict:
+def _run_nok_orchestrator(
+    *, workspace_dir: Path, dataset: str, n_docs: int, allow_none: bool,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
+) -> dict:
     prompt = _nok_orchestrator_prompt(
         workspace_dir=workspace_dir,
         dataset=dataset,
         n_docs=n_docs,
         allow_none=allow_none,
+        initial_proposers=initial_proposers,
+        max_agent_dispatches=max_agent_dispatches,
     )
     os.environ["CLUSTERING_WORKSPACE"] = str(workspace_dir)
     (workspace_dir / "orchestrator_prompt.txt").write_text(prompt, encoding="utf-8")
@@ -669,7 +708,14 @@ def _run_nok_orchestrator(*, workspace_dir: Path, dataset: str, n_docs: int, all
     return {"wall_clock_s": t1 - t0, "stdout": stdout, "usage": usage}
 
 
-def run_nok(dataset_name: str, *, seed: int = 0, resume_classify: bool = False) -> dict:
+def run_nok(
+    dataset_name: str,
+    *,
+    seed: int = 0,
+    resume_classify: bool = False,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
+) -> dict:
     """Ablation 3: full end-to-end run with the lens kept but k information removed.
 
     ``resume_classify`` skips init + orchestrator and re-runs only the classify
@@ -731,6 +777,8 @@ def run_nok(dataset_name: str, *, seed: int = 0, resume_classify: bool = False) 
             dataset=dataset_name,
             n_docs=n_docs,
             allow_none=lens.allow_none,
+            initial_proposers=initial_proposers,
+            max_agent_dispatches=max_agent_dispatches,
         )
         print(f"[nok/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
         _ensure_orchestrator_outputs(workspace_dir)

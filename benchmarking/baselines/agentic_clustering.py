@@ -235,7 +235,17 @@ def _init_workspace(
 
 def _orchestrator_prompt(
     *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
 ) -> str:
+    """Build the headless orchestration prompt.
+
+    ``initial_proposers`` and ``max_agent_dispatches`` are both unset by
+    default, which leaves the proposer count and the stopping rule to the
+    shipped cluster-run skill. Setting either pins that decision from the
+    harness, which is how a published run gets reproduced after the plugin has
+    moved on (see PAPER_CONFIG). Neither touches the plugin.
+    """
     is_fixed_k = k_min == k_max
     k_clause = (
         f"Target k is exactly {k_min}. The Synthesizer must converge on exactly "
@@ -250,6 +260,27 @@ def _orchestrator_prompt(
     )
     cluster_count_phrase = (
         f"the {k_min} clusters" if is_fixed_k else "the clusters"
+    )
+    # Unset => the skill's own stopping rule, verbatim. Set => the pre-issue-#2
+    # cumulative cap, restored for reproducing a published run.
+    stop_clause = (
+        "There is no dispatch cap: keep iterating while\n"
+        "   the taxonomy is still improving and stop when it is not, exactly as the\n"
+        "   skill describes. A dispatch count is not a stopping condition."
+        if max_agent_dispatches is None
+        else (
+            f"OR you have dispatched {max_agent_dispatches} agents cumulatively —\n"
+            "   whichever comes first. The cap is a harness-imposed reproduction\n"
+            "   constraint, not the skill's own rule."
+        )
+    )
+    proposer_clause = (
+        f"\n7. In the INITIAL proposal round, dispatch exactly {initial_proposers} "
+        f"proposers in parallel, overriding the cluster-run skill's default "
+        f"proposer count. Follow-up targeted proposer / investigator dispatches "
+        f"later in the loop proceed as normal."
+        if initial_proposers is not None
+        else ""
     )
     none_clause = (
         f"Some texts will not fit any of {cluster_count_phrase} — leave them "
@@ -298,13 +329,11 @@ benchmark-mode constraints:
 5. {none_clause}
 6. Iterate (Proposer → Synthesizer → Auditor → Critic, dispatching Investigator
    on demand) until the standard stop criteria fire (Critic 'ready', coverage
-   >85%, diminishing returns). There is no dispatch cap: keep iterating while
-   the taxonomy is still improving and stop when it is not, exactly as the
-   skill describes. A dispatch count is not a stopping condition. When stop
+   >85%, diminishing returns). {stop_clause} When stop
    criteria fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
    AND categories.json (the canonical handoff to the text-classification
    plugin's /classify-run). Stop there: do NOT classify. The harness runs
-   /classify-run itself, in a separate headless session, once you are done.
+   /classify-run itself, in a separate headless session, once you are done.{proposer_clause}
 
 Finally, print a 5-line summary: number of iterations, final k, coverage,
 mean confidence, and any caveats.
@@ -358,6 +387,8 @@ def _summarize_orchestrator_usage(result_json: dict) -> dict | None:
 
 def _run_orchestrator(
     *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
 ) -> dict:
     prompt = _orchestrator_prompt(
         workspace_dir=workspace_dir,
@@ -365,6 +396,8 @@ def _run_orchestrator(
         k_min=k_min,
         k_max=k_max,
         allow_none=allow_none,
+        initial_proposers=initial_proposers,
+        max_agent_dispatches=max_agent_dispatches,
     )
     os.environ["CLUSTERING_WORKSPACE"] = str(workspace_dir)
     # Persist the prompt next to the workspace for post-mortems.
@@ -859,9 +892,26 @@ def _build_taxonomy_entries(final_taxonomy: dict, id_map: dict[str, int]) -> lis
 DISCOVER_K_FRACTION = 0.2  # discover-k variant uses gold_k ± 20%.
 METHOD_DISCOVER_K = "agentic_clustering_discoverk"
 
-# The proposer count is not configurable from here. It is whatever the shipped
-# cluster-run skill says (6-7 since commit 2720ff0), so the benchmark measures
-# the method as published rather than a configuration frozen in the harness.
+# What the paper's runs actually used, recovered from the archived run_logs
+# under results/clustering/<ds>/<workspace>/. The shipped plugin has since moved
+# on — 6-7 initial proposers as of commit 2720ff0, and no dispatch cap at all
+# since issue #2 — so a default harness run no longer matches these. Reproducing
+# a published number means asking for that configuration explicitly; nothing
+# here is a default, and none of it changes the plugin.
+#
+#   main      given-k + discover-k seed=0, 2026-05-22/23
+#   notask    Ablation 2 (blank instructions), 2026-05-25
+#   nok       Ablation 3 (k anchor removed), 2026-07-12
+#   synthonly Ablation 1 runs no orchestrator at all — it re-classifies the
+#             archived first-synth taxonomy — so neither knob applies.
+PAPER_CONFIG: dict[str, dict[str, int]] = {
+    "main": {"initial_proposers": 3, "max_agent_dispatches": 8},
+    "notask": {"initial_proposers": 3, "max_agent_dispatches": 8},
+    "nok": {"initial_proposers": 3, "max_agent_dispatches": 20},
+    "synthonly": {},
+}
+
+
 def run_agentic_clustering(
     dataset_name: str,
     *,
@@ -869,6 +919,8 @@ def run_agentic_clustering(
     skip_classify: bool = False,
     resume_classify: bool = False,
     discover_k: bool = False,
+    initial_proposers: int | None = None,
+    max_agent_dispatches: int | None = None,
 ) -> dict:
     """Run our method on one dataset. Returns a small row dict for printing.
 
@@ -882,6 +934,10 @@ def run_agentic_clustering(
     to a separate predictions dir (``agentic_clustering_discoverk``) and a
     separate workspace (``seed=<n>_discoverk``) so the given-k artifacts are
     never overwritten.
+
+    ``initial_proposers`` and ``max_agent_dispatches`` default to ``None``,
+    leaving both decisions to the shipped skill. Pass ``**PAPER_CONFIG["main"]``
+    to reproduce the published seed=0 configuration instead.
     """
     if skip_classify and resume_classify:
         raise ValueError("skip_classify and resume_classify are mutually exclusive")
@@ -937,6 +993,8 @@ def run_agentic_clustering(
             k_min=k_min,
             k_max=k_max,
             allow_none=lens.allow_none,
+            initial_proposers=initial_proposers,
+            max_agent_dispatches=max_agent_dispatches,
         )
         print(f"[agentic/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
 
@@ -1012,6 +1070,10 @@ def run_agentic_clustering(
             "k_in_scope": k_in_scope,
             "k_range": [k_min, k_max],
             "discover_k": discover_k,
+            # None = left to the shipped skill; a number = harness override,
+            # which is what a paper-reproduction run looks like.
+            "initial_proposers": initial_proposers,
+            "max_agent_dispatches": max_agent_dispatches,
             "model_tier": "quality",
             "allow_none": lens.allow_none,
             "llm_input_token_cap": LLM_TOKEN_CAP,

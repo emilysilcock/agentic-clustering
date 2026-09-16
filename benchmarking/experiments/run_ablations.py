@@ -29,6 +29,7 @@ import argparse
 import sys
 import traceback
 
+from benchmarking.baselines.agentic_clustering import PAPER_CONFIG
 from benchmarking.baselines.agentic_ablations import (
     SWEEP_ORDER,
     run_nok,
@@ -89,6 +90,37 @@ def main() -> None:
             "partially-failed classify with scripts/retry_classify_errors.py)."
         ),
     )
+    parser.add_argument(
+        "--paper-config",
+        action="store_true",
+        help=(
+            "Reproduce the configuration the paper's run of this ablation used, "
+            "rather than the shipped plugin's current defaults: pins the initial "
+            "proposer count and restores the cumulative agent-dispatch cap "
+            "(no-task: 3 proposers / 8 dispatches, 2026-05-25; no-k: 3 / 20, "
+            "2026-07-12). The plugin itself is untouched either way. Ignored for "
+            "--synthonly, which runs no orchestrator."
+        ),
+    )
+    parser.add_argument(
+        "--initial-proposers",
+        type=int,
+        default=None,
+        help=(
+            "Pin the initial-round proposer count. Unset = whatever the shipped "
+            "cluster-run skill says (currently 6-7). Overrides --paper-config."
+        ),
+    )
+    parser.add_argument(
+        "--max-agent-dispatches",
+        type=int,
+        default=None,
+        help=(
+            "Stop the loop after this many cumulative agent dispatches. Unset = "
+            "no cap, i.e. the skill's own state-grounded stop criteria (the "
+            "hard checkpoint was removed in issue #2). Overrides --paper-config."
+        ),
+    )
     args = parser.parse_args()
     if args.resume_classify and args.synthonly:
         parser.error("--resume-classify applies to --notask / --nok only")
@@ -104,6 +136,34 @@ def main() -> None:
 
     label = "synthonly" if args.synthonly else ("nok" if args.nok else "notask")
 
+    # Explicit flags win over --paper-config, which wins over "leave it to the
+    # skill". synthonly has no orchestrator, so both stay None there.
+    paper = PAPER_CONFIG[label] if args.paper_config else {}
+    overrides = {
+        "initial_proposers": (
+            args.initial_proposers
+            if args.initial_proposers is not None
+            else paper.get("initial_proposers")
+        ),
+        "max_agent_dispatches": (
+            args.max_agent_dispatches
+            if args.max_agent_dispatches is not None
+            else paper.get("max_agent_dispatches")
+        ),
+    }
+    if args.synthonly and any(v is not None for v in overrides.values()):
+        parser.error(
+            "--initial-proposers / --max-agent-dispatches apply to --notask / "
+            "--nok only; --synthonly re-classifies an archived taxonomy and "
+            "dispatches no agents"
+        )
+    if any(v is not None for v in overrides.values()):
+        print(
+            f"[{label}] harness overrides: "
+            f"initial_proposers={overrides['initial_proposers']} "
+            f"max_agent_dispatches={overrides['max_agent_dispatches']}"
+        )
+
     rows: list[dict] = []
     failures: list[tuple[str, str]] = []
     for name in datasets:
@@ -117,9 +177,9 @@ def main() -> None:
             if args.synthonly:
                 rows.append(run_synthonly(name, seed=args.seed, reuse_existing_classify=args.reuse_existing_classify))
             elif args.nok:
-                rows.append(run_nok(name, seed=args.seed, resume_classify=args.resume_classify))
+                rows.append(run_nok(name, seed=args.seed, resume_classify=args.resume_classify, **overrides))
             else:
-                rows.append(run_notask(name, seed=args.seed, resume_classify=args.resume_classify))
+                rows.append(run_notask(name, seed=args.seed, resume_classify=args.resume_classify, **overrides))
         except Exception as exc:  # noqa: BLE001 — intentional: isolate per-dataset failures
             print(
                 f"\n[{label}/{name}] FAILED — skipping, sweep continues:\n"

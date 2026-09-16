@@ -22,6 +22,7 @@ from typing import Iterable
 
 from benchmarking.baselines.agentic_clustering import (
     METHOD,
+    PAPER_CONFIG,
     run_agentic_clustering,
 )
 
@@ -112,7 +113,52 @@ def main() -> None:
             "(seed=<n>_discoverk) so the given-k artifacts are untouched."
         ),
     )
+    parser.add_argument(
+        "--paper-config",
+        action="store_true",
+        help=(
+            "Reproduce the published seed=0 main-results configuration (3 initial "
+            "proposers, 8-dispatch cap, 2026-05-22/23) instead of the shipped "
+            "plugin's current defaults. The plugin itself is untouched either way."
+        ),
+    )
+    parser.add_argument(
+        "--initial-proposers",
+        type=int,
+        default=None,
+        help=(
+            "Pin the initial-round proposer count. Unset = whatever the shipped "
+            "cluster-run skill says (currently 6-7). Overrides --paper-config."
+        ),
+    )
+    parser.add_argument(
+        "--max-agent-dispatches",
+        type=int,
+        default=None,
+        help=(
+            "Stop the loop after this many cumulative agent dispatches. Unset = "
+            "no cap, i.e. the skill's own stop criteria (the hard checkpoint was "
+            "removed in issue #2). Overrides --paper-config."
+        ),
+    )
     args = parser.parse_args()
+
+    paper = PAPER_CONFIG["main"] if args.paper_config else {}
+    initial_proposers = (
+        args.initial_proposers
+        if args.initial_proposers is not None
+        else paper.get("initial_proposers")
+    )
+    max_agent_dispatches = (
+        args.max_agent_dispatches
+        if args.max_agent_dispatches is not None
+        else paper.get("max_agent_dispatches")
+    )
+    if initial_proposers is not None or max_agent_dispatches is not None:
+        print(
+            f"[{METHOD}] harness overrides: initial_proposers={initial_proposers} "
+            f"max_agent_dispatches={max_agent_dispatches}"
+        )
 
     if args.all:
         datasets = SWEEP_ORDER
@@ -131,6 +177,8 @@ def main() -> None:
             skip_classify=args.skip_classify,
             resume_classify=args.resume_classify,
             discover_k=args.discover_k,
+            initial_proposers=initial_proposers,
+            max_agent_dispatches=max_agent_dispatches,
         )
         rows.append(row)
 
