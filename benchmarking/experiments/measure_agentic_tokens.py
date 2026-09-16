@@ -66,12 +66,10 @@ SWEEP_ORDER = [
 # builder globs), so it can never pollute the averaged metric cells.
 OUT_DIR = RESULTS / "agentic_token_measurement"
 
-# The proposer count is deliberately NOT pinned here. The token figure has to
-# describe the same pipeline as the metric cells it sits beside, and those are
-# produced by the default (unpinned) harness, which follows the shipped skill's
-# current 6-7. This used to pin 3 to match the May 22-23 runs behind the older
-# Table-2 cells; if you ever re-measure tokens for those specific runs, pass
-# agentic_clustering.PUBLISHED_INITIAL_PROPOSERS explicitly below.
+# The proposer count is not pinned: it is whatever the shipped cluster-run
+# skill says, exactly as in a main-results run. That keeps the token figure
+# describing the same pipeline as the metric cells it sits beside. (It used to
+# pin 3, to match the May 22-23 runs behind the older Table-2 cells.)
 
 
 def _workspace_for(dataset: str, discover_k: bool):

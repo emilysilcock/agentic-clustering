@@ -212,7 +212,6 @@ def _init_workspace(
 
 def _orchestrator_prompt(
     *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
-    initial_proposers: int | None = None,
 ) -> str:
     is_fixed_k = k_min == k_max
     k_clause = (
@@ -228,14 +227,6 @@ def _orchestrator_prompt(
     )
     cluster_count_phrase = (
         f"the {k_min} clusters" if is_fixed_k else "the clusters"
-    )
-    proposer_clause = (
-        f"\n7. In the INITIAL proposal round, dispatch exactly {initial_proposers} "
-        f"proposers in parallel, overriding the cluster-run skill's default "
-        f"proposer count. Follow-up targeted proposer / investigator dispatches "
-        f"later in the loop proceed as normal."
-        if initial_proposers is not None
-        else ""
     )
     none_clause = (
         f"Some texts will not fit any of {cluster_count_phrase} — leave them "
@@ -290,7 +281,7 @@ benchmark-mode constraints:
    criteria fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
    AND categories.json (the canonical handoff to the text-classification
    plugin's /classify-run). Do NOT run classify.py — the benchmark harness
-   handles that.{proposer_clause}
+   handles that.
 
 Finally, print a 5-line summary: number of iterations, final k, coverage,
 mean confidence, and any caveats.
@@ -344,7 +335,6 @@ def _summarize_orchestrator_usage(result_json: dict) -> dict | None:
 
 def _run_orchestrator(
     *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
-    initial_proposers: int | None = None,
 ) -> dict:
     prompt = _orchestrator_prompt(
         workspace_dir=workspace_dir,
@@ -352,7 +342,6 @@ def _run_orchestrator(
         k_min=k_min,
         k_max=k_max,
         allow_none=allow_none,
-        initial_proposers=initial_proposers,
     )
     os.environ["CLUSTERING_WORKSPACE"] = str(workspace_dir)
     # Persist the prompt next to the workspace for post-mortems.
@@ -591,15 +580,9 @@ def _build_taxonomy_entries(final_taxonomy: dict, id_map: dict[str, int]) -> lis
 DISCOVER_K_FRACTION = 0.2  # discover-k variant uses gold_k ± 20%.
 METHOD_DISCOVER_K = "agentic_clustering_discoverk"
 
-# The main-results runs of May 22-23 each dispatched 3 proposers in the initial
-# round --- the "2-3" plugin era, pre-commit 2720ff0. Kept here so those runs
-# can still be reproduced exactly (pass initial_proposers=3), but it is NOT a
-# default: the harness follows whatever the shipped skill currently says, which
-# since 2720ff0 is 6-7. Pinning it by default would make the benchmark measure
-# a frozen configuration rather than the method as published in the plugin.
-PUBLISHED_INITIAL_PROPOSERS = 3
-
-
+# The proposer count is not configurable from here. It is whatever the shipped
+# cluster-run skill says (6-7 since commit 2720ff0), so the benchmark measures
+# the method as published rather than a configuration frozen in the harness.
 def run_agentic_clustering(
     dataset_name: str,
     *,
@@ -607,7 +590,6 @@ def run_agentic_clustering(
     skip_classify: bool = False,
     resume_classify: bool = False,
     discover_k: bool = False,
-    initial_proposers: int | None = None,
 ) -> dict:
     """Run our method on one dataset. Returns a small row dict for printing.
 
@@ -621,11 +603,6 @@ def run_agentic_clustering(
     to a separate predictions dir (``agentic_clustering_discoverk``) and a
     separate workspace (``seed=<n>_discoverk``) so the given-k artifacts are
     never overwritten.
-
-    ``initial_proposers`` pins the initial-round proposer count. It defaults to
-    ``None``, which leaves the count to the shipped cluster-run skill (currently
-    6-7), so a default run measures the plugin as published. Pass
-    PUBLISHED_INITIAL_PROPOSERS=3 to reproduce the May 22-23 main-results runs.
     """
     if skip_classify and resume_classify:
         raise ValueError("skip_classify and resume_classify are mutually exclusive")
@@ -681,7 +658,6 @@ def run_agentic_clustering(
             k_min=k_min,
             k_max=k_max,
             allow_none=lens.allow_none,
-            initial_proposers=initial_proposers,
         )
         print(f"[agentic/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
 
@@ -756,7 +732,6 @@ def run_agentic_clustering(
             "k_in_scope": k_in_scope,
             "k_range": [k_min, k_max],
             "discover_k": discover_k,
-            "initial_proposers": initial_proposers,
             "model_tier": "quality",
             "allow_none": lens.allow_none,
             "llm_input_token_cap": LLM_TOKEN_CAP,
