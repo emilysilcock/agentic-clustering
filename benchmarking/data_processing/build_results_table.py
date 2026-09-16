@@ -27,7 +27,7 @@ import statistics
 from dataclasses import dataclass
 from functools import lru_cache
 
-from benchmarking.paths import DATA_DERIVED, RESULTS, ROOT
+from benchmarking.paths import DATA, DATA_DERIVED, RESULTS, ROOT
 
 
 @dataclass(frozen=True)
@@ -52,7 +52,8 @@ METHODS_DISCOVER_K: list[MethodDisplay] = [
     MethodDisplay("bertopic_discoverk",        "BERTopic"),
     MethodDisplay("topicgpt",                  "TopicGPT"),
     MethodDisplay("huang_he",                  "Huang \\& He"),
-    MethodDisplay("agentic_clustering_discoverk", "Agentic clustering (ours)"),
+    MethodDisplay("agentic_clustering_discoverk", "Agentic clustering, $k\\pm20\\%$ (ours)"),
+    MethodDisplay("agentic_clustering_nok",    "Agentic clustering, no $k$ (ours)"),
 ]
 
 
@@ -179,6 +180,199 @@ def _fmt_cost(v: tuple[float, float] | None) -> str:
     return f"\\${total:.0f}"
 
 
+def _fmt_tok(v: float | str | None) -> str:
+    """Format one token cell (millions, 2 dp).
+
+    ``None`` -> ``--`` (method has no LLM-taxonomy token usage of this tier);
+    the string ``"?"`` -> ``?`` (our big-model figure, not yet measured --- the
+    Opus agent loop runs on the Claude Code subscription, which exposes no token
+    counts, so this cell awaits a metered re-run); a number is rendered in
+    millions of tokens.
+    """
+    if v is None:
+        return "--"
+    if v == "?":
+        return "?"
+    return f"{v / 1e6:.2f}"
+
+
+def _fmt_tok0(v: float | str | None) -> str:
+    """Like ``_fmt_tok`` but 0 decimal places --- used for the small-model
+    (gpt-5-mini) columns, whose millions-of-tokens counts don't need fractions."""
+    if v is None:
+        return "--"
+    if v == "?":
+        return "?"
+    return f"{v / 1e6:.0f}"
+
+
+def _load_json(path):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _usage_io(u: dict | None) -> tuple[int, int]:
+    """(input, output) tokens from a metered-usage file; input includes cache reads."""
+    if not u:
+        return (0, 0)
+    i = (
+        int(u.get("input_tokens", 0) or 0)
+        + int(u.get("cache_read_input_tokens", 0) or 0)
+        + int(u.get("cache_creation_input_tokens", 0) or 0)
+    )
+    return (i, int(u.get("output_tokens", 0) or 0))
+
+
+@lru_cache(maxsize=1)
+def _huang_he_big_tokens() -> tuple[int, int]:
+    """(input, output) Opus tokens for Huang & He's one merge call per dataset.
+
+    Reconstructed offline: the subscription CLI logged no usage (``usage_merge``
+    is zeroed), but the exact prompt is rebuilt from the saved pre-merge label
+    list and the raw response is on disk, so we re-tokenise both with tiktoken
+    ``o200k_base`` --- the same encoder TopicGPT's on-disk big-model estimate
+    falls back to, keeping the big-model column internally consistent. Accurate
+    because the merge is a single-shot call (one prompt in, one response out).
+    """
+    import tiktoken
+
+    from benchmarking.baselines.huang_he.prompts import prompt_construct_merge_label
+
+    enc = tiktoken.get_encoding("o200k_base")
+    bi = bo = 0
+    for d in DATASETS:
+        base = DATA / "huang_he" / d.key
+        pre = _load_json(base / "labels_pre_merge.json")
+        if pre is None:
+            continue
+        bi += len(enc.encode(prompt_construct_merge_label(pre)))
+        raw_path = base / "_merge_raw_response.txt"
+        raw = (
+            raw_path.read_text(encoding="utf-8")
+            if raw_path.exists()
+            else json.dumps(_load_json(base / "labels_merged.json"))
+        )
+        bo += len(enc.encode(raw or ""))
+    return (bi, bo)
+
+
+# Comparable big-model (Opus) token totals for OUR given-k and k±20% runs, in
+# MILLIONS. These are ESTIMATES (midpoint of the range from the 3 datasets whose
+# token runs completed, scaled to 7 via the no-k per-dataset shape --- the full
+# sweep isn't finished). Flagged with a dagger in the table + caption. no-k is
+# measured for all 7 and computed from disk below, so it is NOT listed here.
+_OURS_BIG_COMPARABLE_M = {
+    "agentic_clustering": 6.0,             # given-k (estimate; 3/7 measured)
+    "agentic_clustering_discoverk": 7.0,   # k±20% (estimate; 3/7 measured)
+}
+
+
+def _ours_small_tokens(method_key: str) -> tuple[int, int]:
+    """(input, output) gpt-5-mini classification tokens for one of our runs,
+    summed across datasets from each meta's ``cost`` block (real metered usage)."""
+    si = so = 0
+    for d in DATASETS:
+        m = _load_json(RESULTS / "predictions" / method_key / d.key / "seed=0.meta.json")
+        if not m:
+            continue
+        c = m.get("cost", {})
+        si += int(c.get("input_tokens", 0) or 0)
+        so += int(c.get("output_tokens", 0) or 0)
+    return si, so
+
+
+# Isolated token-measurement workspaces (measure_agentic_tokens.py) that carry
+# the real Opus usage for our given-k / k±20% runs.
+_TOKRUN_SUFFIX = {
+    "agentic_clustering": "seed=0_tokrun",
+    "agentic_clustering_discoverk": "seed=0_tokrun_discoverk",
+}
+
+
+def _ours_big_measured(method_key: str) -> int | None:
+    """Measured comparable big-model tokens (input + cacheCreation, excluding
+    cache re-reads) summed across the token-measurement workspaces --- but only
+    when ALL 7 datasets have completed. Returns None while the sweep is partial,
+    so ``token_counts`` falls back to the estimate (and keeps the dagger). Once
+    the sweep finishes, re-running the builder auto-swaps estimate -> measured
+    and the dagger drops, with no code change."""
+    suffix = _TOKRUN_SUFFIX.get(method_key)
+    if not suffix:
+        return None
+    total = 0
+    n = 0
+    for d in DATASETS:
+        rj = _load_json(RESULTS / "clustering" / d.key / suffix / "orchestrator_result.json")
+        if not rj:
+            continue
+        mu = (rj.get("modelUsage") or {}).get("claude-opus-4-7") or {}
+        total += int(mu.get("inputTokens", 0) or 0) + int(mu.get("cacheCreationInputTokens", 0) or 0)
+        n += 1
+    return total if n == len(DATASETS) else None
+
+
+def token_counts(
+    method_key: str,
+) -> tuple[float | str | None, float | str | None, float | str | None]:
+    """(big_comparable, small_in, small_out) token totals across all datasets.
+
+    ``big_comparable`` is the frontier-tier (Claude Opus 4.7) token count on the
+    SAME basis as the baselines' tiktoken figures --- unique *content* only
+    (input + cache creation), **excluding cache re-reads** --- so our multi-turn
+    agent loop is compared like-for-like rather than on its cache-inflated total.
+    ``small`` = cheap-tier (gpt-5-mini) metered usage. ``None`` => tier unused.
+
+    Provenance:
+      * small (all): real metered batch-API usage on disk.
+      * TopicGPT / Huang & He big: tiktoken content tokens (input side).
+      * our no-k big: measured (input + cacheCreation summed over 7 datasets).
+      * our given-k / k±20% big: ESTIMATE from ``_OURS_BIG_COMPARABLE_M``.
+    """
+    if method_key in _OURS_BIG_COMPARABLE_M:  # given-k, k±20%
+        si, so = _ours_small_tokens(method_key)
+        measured = _ours_big_measured(method_key)  # real total once all 7 land
+        big = measured if measured is not None else _OURS_BIG_COMPARABLE_M[method_key] * 1e6
+        return (big, si, so)
+
+    if method_key == "agentic_clustering_nok":  # no-k: big measured for all 7
+        big = 0
+        for d in DATASETS:
+            m = _load_json(RESULTS / "predictions" / method_key / d.key / "seed=0.meta.json")
+            ou = (m or {}).get("orchestrator_usage") or {}
+            big += int(ou.get("big_input_tokens_no_cache", 0) or 0)
+            big += int(ou.get("big_cache_creation_tokens", 0) or 0)
+        si, so = _ours_small_tokens(method_key)
+        return (big or None, si, so)
+
+    if method_key == "topicgpt":
+        bi = si = so = 0
+        for d in DATASETS:
+            base = DATA / "topicgpt" / d.key
+            for ph in ("generate", "refine"):  # Opus (big); input-side content
+                i, _o = _usage_io(_load_json(base / f"usage_{ph}.json"))
+                bi += i
+            for ph in ("assign", "correct"):  # gpt-5-mini (small)
+                i, o = _usage_io(_load_json(base / f"usage_{ph}.json"))
+                si += i
+                so += o
+        return (bi, si, so)
+
+    if method_key == "huang_he":
+        si = so = 0
+        for d in DATASETS:
+            base = DATA / "huang_he" / d.key
+            for ph in ("generate", "classify"):  # gpt-5-mini (small)
+                i, o = _usage_io(_load_json(base / f"usage_{ph}.json"))
+                si += i
+                so += o
+        bi, _bo = _huang_he_big_tokens()  # input-side content
+        return (bi, si, so)
+
+    return (None, None, None)
+
+
 def total_cost(
     method_key: str, datasets: list["DatasetDisplay"]
 ) -> tuple[float, float] | None:
@@ -218,9 +412,11 @@ def _panel_rows(
     *,
     cost_column: bool,
     cost_lookup: dict[str, tuple[float, float] | None] | None = None,
+    token_lookup: dict[str, tuple] | None = None,
 ) -> list[str]:
     """Render one panel for one deck. ``cost_column=True`` appends a Cost
-    column at the end of each row using ``cost_lookup``."""
+    column plus three token columns (comparable big-model, small in/out) at the
+    end of each row, using ``cost_lookup`` and ``token_lookup``."""
     best: dict[tuple[str, str], float] = {}
     for d in datasets:
         for name in METRICS:
@@ -248,6 +444,16 @@ def _panel_rows(
                     cells.append(_fmt(v, is_best))
         if cost_column:
             cells.append(_fmt_cost((cost_lookup or {}).get(m.key)))
+            big, small_in, small_out = (token_lookup or {}).get(m.key) or (None, None, None)
+            big_str = _fmt_tok(big)
+            # Dagger only while the big-model figure is still the estimate --- it
+            # drops automatically once the token sweep completes for this config.
+            is_estimate = m.key in _OURS_BIG_COMPARABLE_M and _ours_big_measured(m.key) is None
+            if is_estimate and big_str not in ("--", "?"):
+                big_str += "$^{\\dagger}$"
+            cells.append(big_str)
+            cells.append(_fmt_tok0(small_in))
+            cells.append(_fmt_tok0(small_out))
         rows.append("    " + " & ".join(cells) + " \\\\")
     return rows
 
@@ -258,47 +464,57 @@ def _deck_lines(
     cell_metrics: dict[tuple[str, str], dict | None],
     cost_column: bool,
     cost_lookup: dict[str, float | None] | None,
+    token_lookup: dict[str, tuple] | None = None,
 ) -> list[str]:
     """Emit one tabular deck covering the given subset of datasets.
 
-    ``cost_column`` adds a final $-total column (used on the bottom deck only
-    so the figure carries cost once, not twice).
+    ``cost_column`` adds a final $-total column plus a three-column token block
+    --- a single comparable big-model (Opus) content-token column and
+    small-model (gpt-5-mini) in/out, in millions --- used on the bottom deck
+    only so the figure carries the cost/compute summary once, not twice.
     """
     n_data = len(datasets)
     cells_per_dataset = 4  # k_pred, ARI, NMI, ACC
+    n_token_cols = 3  # big (comparable content), small in, small out
 
-    # Column spec: method label + (4 cols per dataset) + optional cost.
-    col_spec = "l" + (" cccc" * n_data) + (" r" if cost_column else "")
+    # Column spec: method label + (4 cols per dataset) + optional cost + tokens.
+    col_spec = "l" + (" cccc" * n_data) + (" r rrr" if cost_column else "")
 
     # Top header row: dataset names as 4-wide multicolumns, plus optional
-    # 1-wide Cost header.
+    # 1-wide Cost, 1-wide Big-model, and a 2-wide Small-model header.
     top_header_cells = [""] + [
         f"\\multicolumn{{{cells_per_dataset}}}{{c}}{{\\textbf{{{d.display}}}}}"
         for d in datasets
     ]
     if cost_column:
         top_header_cells.append("\\textbf{Cost}")
+        top_header_cells.append("\\multicolumn{3}{c}{\\textbf{Token counts (M)}}")
     top_header = " & ".join(top_header_cells) + " \\\\"
 
-    # cmidrule under each dataset multicolumn header.
+    # cmidrule under each dataset multicolumn header, then cost + token groups.
     cmid_parts = []
     for i in range(n_data):
         first = 2 + i * cells_per_dataset
         last = first + cells_per_dataset - 1
         cmid_parts.append(f"\\cmidrule(lr){{{first}-{last}}}")
     if cost_column:
-        col = 2 + n_data * cells_per_dataset
+        col = 2 + n_data * cells_per_dataset  # Cost column
         cmid_parts.append(f"\\cmidrule(lr){{{col}-{col}}}")
+        cmid_parts.append(f"\\cmidrule(lr){{{col + 1}-{col + 3}}}")  # Token counts (Frontier, Cheap in/out)
     cmid_line = "".join(cmid_parts)
 
-    # Sub-header row: Method + ($\hat{k}$ ARI NMI ACC) × n_data [+ total $].
+    # Sub-header row: Method + ($\hat{k}$ ARI NMI ACC) × n_data [+ total $ + tokens].
     sub_header_cells = ["\\textbf{Method}"] + ["$\\hat{k}$", "ARI", "NMI", "ACC"] * n_data
     if cost_column:
-        sub_header_cells.append("total \\$")
+        sub_header_cells += ["total \\$", "Frontier", "Cheap - in", "Cheap - out"]
     sub_header = " & ".join(sub_header_cells) + " \\\\"
 
     # Panel header spans the full deck width.
-    panel_span = 1 + cells_per_dataset * n_data + (1 if cost_column else 0)
+    panel_span = (
+        1
+        + cells_per_dataset * n_data
+        + ((1 + n_token_cols) if cost_column else 0)
+    )
 
     def panel_header(title: str) -> str:
         return (
@@ -318,7 +534,7 @@ def _deck_lines(
     ]
     deck.extend(_panel_rows(
         METHODS_GIVEN_K, datasets, cell_metrics,
-        cost_column=cost_column, cost_lookup=cost_lookup,
+        cost_column=cost_column, cost_lookup=cost_lookup, token_lookup=token_lookup,
     ))
     deck.extend([
         "    \\midrule",
@@ -327,7 +543,7 @@ def _deck_lines(
     ])
     deck.extend(_panel_rows(
         METHODS_DISCOVER_K, datasets, cell_metrics,
-        cost_column=cost_column, cost_lookup=cost_lookup,
+        cost_column=cost_column, cost_lookup=cost_lookup, token_lookup=token_lookup,
     ))
     deck.extend([
         "    \\bottomrule",
@@ -350,6 +566,9 @@ def build_table() -> str:
     }
     cost_lookup: dict[str, tuple[float, float] | None] = {
         m.key: total_cost(m.key, DATASETS) for m in all_methods
+    }
+    token_lookup: dict[str, tuple] = {
+        m.key: token_counts(m.key) for m in all_methods
     }
 
     # Both decks must be scaled by the *same* factor, otherwise resizing each
@@ -381,23 +600,32 @@ def build_table() -> str:
         cell_metrics=cell_metrics,
         cost_column=True,
         cost_lookup=cost_lookup,
+        token_lookup=token_lookup,
     ))
     lines.append("  }")
-    # Top deck sets the scale; bottom deck is scaled by the same factor so the
-    # two share one font size. A vertical gap separates the stacked tabulars.
-    lines.append("  \\resizebox{\\textwidth}{!}{\\usebox{\\acdeckone}}")
+    # Both decks share one font size: the wider deck is scaled to \textwidth and
+    # the other by the same factor, so we divide each by max(wd1, wd2). (The
+    # token block can make the bottom deck the wider of the two, so we must not
+    # assume the top deck is widest.) A vertical gap separates the tabulars.
+    lines.append(
+        "  \\resizebox{\\fpeval{\\wd\\acdeckone/max(\\wd\\acdeckone,\\wd\\acdecktwo)}"
+        "\\textwidth}{!}{\\usebox{\\acdeckone}}"
+    )
     lines.append("")
     lines.append("  \\vspace{0.5em}")
     lines.append("")
     lines.append(
-        "  \\resizebox{\\fpeval{\\wd\\acdecktwo/\\wd\\acdeckone}\\textwidth}{!}"
-        "{\\usebox{\\acdecktwo}}"
+        "  \\resizebox{\\fpeval{\\wd\\acdecktwo/max(\\wd\\acdeckone,\\wd\\acdecktwo)}"
+        "\\textwidth}{!}{\\usebox{\\acdecktwo}}"
     )
     lines.extend([
         "  \\caption{Clustering results across seven benchmarks. Cost is the "
         "total USD across all seven datasets; methods that use the Claude Code "
         "Max subscription show it as the flat \\$100 subscription plus metered "
-        "API spend (\\$100 + API).}",
+        "API spend (\\$100 + API). The token columns report frontier-tier "
+        "(Claude Opus 4.7) and cheap-tier (\\texttt{gpt-5-mini}) usage in "
+        "millions, summed across the seven datasets; see \\S\\ref{sec:results} "
+        "for the accounting.}",
         "  \\label{tab:results}",
         "\\end{table*}",
         "",

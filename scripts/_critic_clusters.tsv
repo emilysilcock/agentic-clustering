@@ -1,0 +1,178 @@
+c1	Check bank balance	User asks how much money is in their bank account(s).
+c2	Check if balance covers a purchase	User asks whether their bank balance is enough to afford a specific purchase.
+c3	Freeze or hold bank account	User asks to freeze, lock, hold, or block their own bank account.
+c4	Ask why bank account is locked	User asks the assistant to explain why their bank account is currently locked or inaccessible.
+c5	Report fraud or suspicious activity	User flags suspicious activity, an unauthorized charge, or a hacked/compromised bank account.
+c6	Order new checks or checkbook	User asks to order more paper checks or a new checkbook for their account.
+c7	Look up bank routing number	User asks for the routing number of their bank account or where to find it.
+c8	Transfer money between accounts	User asks to move funds from one of their accounts to another, including 401k transfers.
+c9	Notify bank of upcoming travel	User asks the assistant to inform the bank or its fraud department about upcoming travel.
+c10	Get deposit account interest rate	User asks the interest rate on a checking or savings account (a deposit-side rate, not a credit card APR).
+c11	Get credit card APR	User asks about the APR or interest rate on their credit card, possibly relative to a benchmark.
+c12	Get credit card limit	User asks for the spending/credit limit currently set on a credit card.
+c13	Increase credit card limit	User asks to raise the credit limit on a card, or how to request an increase.
+c14	Get foreign transaction fee on card	User asks whether their card will be charged international or foreign transaction fees.
+c15	Get minimum payment due	User asks for the minimum payment owed on a credit card or bill.
+c16	Check credit card rewards balance	User asks how many reward points they have on a credit card.
+c17	Redeem credit card rewards	User asks how to apply or redeem credit card reward points, e.g., toward a flight.
+c18	Get credit score	User asks about their credit rating, FICO score, or how an event affects it.
+c19	Apply for new credit card	User asks how to apply for, or asks to start an application for, a new credit card.
+c20	Check credit card application status	User asks whether their submitted credit card application has been approved or processed.
+c21	Check replacement card arrival	User asks when their replacement or newly issued card will arrive.
+c22	Report damaged card	User asks how to report a damaged debit or credit card.
+c23	Get minimum age for card	User asks at what age someone is eligible to get a credit card.
+c24	Get overdraft protection coverage	User asks how much overdraft protection covers on their account.
+c25	Set up direct deposit	User asks how to set up direct deposit for their paycheck.
+c26	Get pay date	User asks when their next paycheck arrives or when the last one was issued.
+c27	Get income amount	User asks how much they earn or what their total income is.
+c28	Get taxes owed	User asks how much in state or income taxes they owe or have paid.
+c29	Get W-2 form	User asks where or how to obtain their W-2 tax form.
+c30	Get recent transaction	User asks about the most recent transaction or its amount.
+c31	Get spending summary	User asks for their cumulative spending over a period or broken down by category.
+c32	Pay or check utility bill	User asks about the amount due on a utility bill or states the intent to pay it.
+c33	Get utility bill due date	User asks when a utility bill is due.
+c34	Get utility meter reading or usage	User asks for a gas/electric meter reading or kWh usage figure.
+c35	Update mailing address	User asks to update the mailing address on their account.
+c36	Change name on account	User asks to change the name listed on a financial account.
+c37	Auto-fill card on form	User asks the assistant to autofill their credit card number into a form on screen.
+c38	Get health insurance plan info	User asks for details of their current health insurance plan.
+c39	Update insurance contact	User asks who to contact to update their insurance information.
+c40	Sign up for new insurance plan	User asks how to enroll in a new insurance plan.
+c41	Submit PTO request	User asks the assistant to file a paid time off or vacation request for specific dates.
+c42	Check PTO balance	User asks how many PTO or vacation days they have remaining or have already used.
+c43	Check PTO request approval	User asks whether a submitted PTO or vacation request has been approved.
+c44	Get next day off	User asks when their next scheduled day off is or how long until one is available.
+c45	List today's meetings	User asks the assistant to list the meetings on their schedule for today.
+c46	Book meeting room	User asks the assistant to reserve a meeting room.
+c47	Remove calendar event	User asks the assistant to delete or clear an event from their calendar.
+c48	Make restaurant reservation	User asks the assistant to book a new restaurant table reservation.
+c49	Confirm restaurant reservation	User asks the assistant to verify or confirm an existing restaurant reservation.
+c50	Cancel restaurant reservation	User asks the assistant to cancel a dinner or restaurant reservation.
+c51	Check if restaurant takes reservations	User asks whether a restaurant accepts reservations.
+c52	Check restaurant wait time	User asks how busy a restaurant is or how long the current wait is.
+c53	Check restaurant reviews	User asks whether reviews for a restaurant are good or what the rating is.
+c54	Recommend restaurants	User asks for suggestions of places to eat or restaurants to try.
+c55	Find a recipe	User asks the assistant to find a recipe for a specific dish.
+c56	Get cooking time	User asks how long to cook a particular food item.
+c57	Ask ingredient substitution	User asks whether one ingredient can replace another in a recipe.
+c58	List recipe ingredients	User asks what ingredients are required to make a particular dish, or what oil is best for cooking it.
+c59	Ask food storage or expiration	User asks how long a food item keeps or when it goes bad.
+c60	Get nutrition info	User asks for nutrition or calorie information about a food item.
+c61	Add item to shopping list	User asks the assistant to add an item to their shopping or grocery list.
+c62	View shopping list	User asks what is currently on their shopping or grocery list.
+c63	View reminders or to-do list	User asks the assistant to read out their to-do list or reminders.
+c64	Place online order	User asks the assistant to place an order for goods or process a shopping list purchase.
+c65	Check order status	User asks for the status of an existing online order.
+c66	Find product to buy online	User asks the assistant where to buy a specific product online or to search for a product style.
+c67	Find local service provider	User asks for a local service provider such as a cleaner, instructor, real estate agent, or specialty professional.
+c68	Find nearest store or hospital	User asks for the nearest store, hospital, or business to a location.
+c69	List nearby venues or amenities	User asks for a listing of stores, community gardens, or amenities in a nearby area.
+c70	Book ride share	User asks the assistant to book an Uber or other ride share to a destination.
+c71	Book a flight	User asks the assistant to book or reserve a flight.
+c72	Check flight status	User asks for the current status of a specific flight.
+c73	Book hotel	User asks the assistant to find or book a hotel.
+c74	Book car rental	User asks the assistant to book a car rental.
+c75	Check carry-on luggage rules	User asks what items or limits apply to airline carry-on luggage.
+c76	Check travel vaccination requirements	User asks whether vaccinations or shots are required or recommended for travel to a destination.
+c77	Check travel plug compatibility	User asks whether a destination uses compatible electrical outlets or whether a converter is needed.
+c78	Get travel alerts	User asks about travel alerts, advisories, or warnings for a region.
+c79	Report lost luggage	User reports missing luggage and asks what to do about it.
+c80	Find lost phone	User reports having misplaced their phone and asks for help locating it.
+c81	Find car in lot	User asks the assistant to help locate their car in a parking lot.
+c82	Get travel time	User asks the estimated travel time or ETA for a trip by bus, car, or other transport mode.
+c83	Get traffic conditions	User asks about expected traffic conditions on a route at a given time.
+c84	Share location or send directions	User asks the assistant to share their location with named contacts or send directions to them.
+c85	Get car MPG	User asks about their car's miles-per-gallon or gas mileage.
+c86	Get car odometer mileage	User asks how many miles their car currently has on it.
+c87	Get car model price	User asks how much a particular car model costs.
+c88	Diagnose check engine or car issue	User asks what is wrong with their car or how to address a check-engine warning.
+c89	Schedule car maintenance	User asks where or when to schedule a car maintenance appointment, or whether to take it in for inspection.
+c90	Get oil change schedule	User asks when their car's last oil change was or when the next one is due.
+c91	Get oil change instructions	User asks how to change their car's oil or what oil to use.
+c92	Get tire pressure	User asks for their car's tire pressure reading or how to find it.
+c93	Get tire replacement schedule	User asks when their tires should be replaced or how to tell.
+c94	Jump start car	User asks for help jump-starting their car.
+c95	Deodorize car	User asks how to deodorize the interior of a car.
+c96	Set timer	User asks the assistant to start a countdown timer for a duration.
+c97	Set alarm	User asks the assistant to set a wake-up or scheduled alarm.
+c98	Get current date	User asks what today's date is, what day of the week it is, or the date a given number of days from now.
+c99	Get time or timezone	User asks for the current time in a timezone or which timezone a city is in.
+c100	Do math calculation	User asks the assistant to perform an arithmetic, percentage, square root, or similar calculation.
+c101	Convert units	User asks the assistant to convert between units of measurement.
+c102	Translate word	User asks for the translation of a word into another language.
+c103	Define word	User asks for the definition or meaning of a word.
+c104	Spell word	User asks how to spell a particular word.
+c105	Roll dice	User asks the assistant to simulate rolling a die or dice.
+c106	Flip coin	User asks the assistant to flip or toss a coin.
+c107	Tell a joke	User asks the assistant to tell a joke or share something funny.
+c108	Share a fun fact	User asks the assistant for an interesting fact or piece of trivia on a topic.
+c109	Place phone call	User asks the assistant to dial or call a person, contact, or number.
+c110	Reject incoming call	User asks the assistant to deny or decline an incoming phone call.
+c111	Send text message	User asks the assistant to send an SMS or text message to a recipient.
+c112	Pair assistant with phone	User asks the assistant to connect or pair itself with their phone.
+c113	Disconnect assistant from phone	User asks the assistant to unpair or disconnect from their phone.
+c114	Compare phone models	User asks the assistant how their phone compares to other models.
+c115	Get mobile plan limits	User asks about the data or usage limits on their phone plan.
+c116	Compare mobile carriers	User asks whether another carrier offers a cheaper plan.
+c117	Get subscription remaining time	User asks how much time is left on a subscription such as a streaming service.
+c118	Restart subscription delivery	User asks the assistant to restart a recurring delivery service such as a newspaper.
+c119	Identify currently playing song	User asks the assistant to identify the song that is currently playing.
+c120	Play specific song	User asks the assistant to play a particular song, including by matching lyrics.
+c121	Skip to next song	User asks the assistant to move on to the next track.
+c122	Add song to playlist	User asks the assistant to add the current or specified song to a named playlist.
+c123	Display song lyrics	User asks the assistant to display the lyrics of a song.
+c124	Look up movie showtime	User asks what time a particular movie is playing.
+c125	List TV shows on tonight	User asks what shows are on TV tonight.
+c126	Look up sports broadcast	User asks whether a network is broadcasting a particular sports game.
+c127	Look up movie or award info	User asks trivia about movies, award nominees, famous lines, or TV plots.
+c128	Get news headlines	User asks the assistant for the top news stories or headlines.
+c129	Identify advertised brand	User asks what brand or company was the source of a recent advertisement.
+c130	Identify designer or maker	User asks what company or designer is responsible for a product or design.
+c131	Look up product category info	User asks the assistant to describe or compare a consumer product category.
+c132	Get current weather	User asks the assistant for the current weather, including a request to repeat it.
+c133	Set smart home fan	User asks the assistant to adjust a ceiling fan.
+c134	Dim screen brightness	User asks the assistant to dim a screen or lower its brightness.
+c135	Find remote control	User asks the assistant where the TV remote is.
+c136	Check who is home	User asks who has returned home or who is currently at the house.
+c137	Check local infrastructure status	User asks whether neighborhood infrastructure such as street lamps is working.
+c138	Look up appliance info	User asks about a household appliance, including its warranty terms or how to use a feature.
+c139	Find assembly instructions	User asks for assembly schematics or instructions for furniture or DIY projects.
+c140	Get conservation tips	User asks for tips on energy, water, or resource conservation at home.
+c141	Get health remedy or treatment	User asks for home remedies, treatment advice, when to see a doctor, or whether a condition is curable.
+c142	Find mental health help	User asks how to find mental-health support or resources.
+c143	Get fitness info	User asks for fitness or exercise information such as stretches or calories burned.
+c144	Get stress relief methods	User asks for methods to relieve stress.
+c145	Get cause of medical condition	User asks what causes a particular medical condition.
+c146	Write speech or essay	User asks the assistant to draft the beginning of a speech, essay, or similar piece of writing.
+c147	Write biography	User asks the assistant to start writing a biography about them.
+c148	Write educational document	User asks how to write a formal educational document such as an IEP.
+c149	Solve homework problem	User asks the assistant to solve a specific textbook or homework problem.
+c150	Generate map or visualization	User asks the assistant to generate a map or visualization of data such as event locations.
+c151	Look up driving or legal rule	User asks about a traffic, driving, or legal rule.
+c152	Look up local venue policy	User asks about a local venue's rules, such as a park's pet policy.
+c153	Discuss surveillance or privacy	User asks paranoid or surveillance-themed questions about being watched or government monitoring.
+c154	Look up general trivia	User asks an open-ended factual, trivia, or philosophical question that does not fit a narrower domain â€” inventors, historical figures, costs, statistics, cultural commentary, broad how-to and life-advice questions.
+c155	Change assistant voice	User asks the assistant to switch to a different voice gender or accent.
+c156	Adjust speech speed	User asks the assistant to speak slower or faster.
+c157	Enable whisper mode	User asks the assistant to switch to whisper or quiet mode.
+c158	Reset assistant to defaults	User asks the assistant to reset or restore itself to original factory settings.
+c159	Repeat last utterance	User asks the assistant to repeat what it just said.
+c160	Express not understanding	User signals that they did not catch or understand what the assistant said.
+c161	Cancel current action	User asks the assistant to stop or halt the current ongoing process.
+c162	Wait or stall	User asks the assistant to wait a moment while they finish another task.
+c163	Set user's preferred name	User asks the assistant to call them by a different name from now on.
+c164	Recall user's preferred name	User asks the assistant what name has been set for them.
+c165	Rename the assistant	User asks the assistant to take on a new name for itself.
+c166	Ask assistant's name	User asks the assistant for its own name or designation.
+c167	Ask assistant's origin	User asks where the assistant was born, comes from, or is based.
+c168	Ask assistant's birthday	User asks the assistant when its birthday is.
+c169	Ask who created the assistant	User asks who built, owns, or employs the assistant.
+c170	Ask if assistant is human	User asks whether the assistant is actually a real person.
+c171	Ask if assistant speaks language	User asks whether the assistant can speak or understand a particular language.
+c172	Ask assistant's hobbies	User asks the assistant about its hobbies, pets, or off-duty interests.
+c173	Ask what assistant can do	User asks the assistant to list its capabilities, supported topics, or sample queries.
+c174	Confirm yes	User affirms or agrees with the assistant's previous statement.
+c175	Express uncertainty	User responds that they are not sure or don't know.
+c176	Greet assistant	User greets the assistant.
+c177	Thank assistant	User thanks the assistant for help.
+c178	End conversation	User signals the end of the conversation with a farewell.

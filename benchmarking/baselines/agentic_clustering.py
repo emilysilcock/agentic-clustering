@@ -211,7 +211,8 @@ def _init_workspace(
 
 
 def _orchestrator_prompt(
-    *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool
+    *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
+    initial_proposers: int | None = None,
 ) -> str:
     is_fixed_k = k_min == k_max
     k_clause = (
@@ -227,6 +228,15 @@ def _orchestrator_prompt(
     )
     cluster_count_phrase = (
         f"the {k_min} clusters" if is_fixed_k else "the clusters"
+    )
+    proposer_clause = (
+        f"\n7. In the INITIAL proposal round, dispatch exactly {initial_proposers} "
+        f"proposers in parallel, overriding the cluster-run skill's default "
+        f"proposer count. This reproduces the proposer configuration of the "
+        f"reported main results. Follow-up targeted proposer / investigator "
+        f"dispatches later in the loop proceed as normal."
+        if initial_proposers is not None
+        else ""
     )
     none_clause = (
         f"Some texts will not fit any of {cluster_count_phrase} — leave them "
@@ -252,6 +262,19 @@ Export this as the workspace for all corpus-tools scripts before any other call:
     export CLUSTERING_WORKSPACE={workspace_dir}
     if [ -z "$CLAUDE_PLUGIN_ROOT" ]; then export CLAUDE_PLUGIN_ROOT=$(cat {workspace_dir}/.plugin_root); fi
 
+CRITICAL — SINGLE-SHOT HEADLESS SESSION. This is one non-interactive `claude -p`
+turn. There is NO user and NO mechanism to resume you once your turn ends. If you
+end your turn while ANY sub-agent (proposer / synthesizer / auditor / critic /
+investigator) is still pending, the run DIES incomplete and is discarded. The
+Task tool is SYNCHRONOUS: each Task call runs the sub-agent and returns its result
+WITHIN your current turn. You MUST therefore drive the entire loop to completion
+in one continuous flow — dispatch a Task (you may issue several Task calls
+together to run proposers concurrently), let it RETURN inline, read the result,
+and immediately continue to the next step. NEVER stop to "wait for completion
+notifications", NEVER say you are "waiting", and NEVER end your turn before
+cluster-finalize has written final_taxonomy.json. Just keep working until finalize
+is done.
+
 Run the iteration loop described in the cluster-run skill, with these
 benchmark-mode constraints:
 
@@ -268,15 +291,61 @@ benchmark-mode constraints:
    criteria fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
    AND categories.json (the canonical handoff to the text-classification
    plugin's /classify-run). Do NOT run classify.py — the benchmark harness
-   handles that.
+   handles that.{proposer_clause}
 
 Finally, print a 5-line summary: number of iterations, final k, coverage,
 mean confidence, and any caveats.
 """
 
 
+def _summarize_orchestrator_usage(result_json: dict) -> dict | None:
+    """Distil a ``claude -p --output-format json`` result into a big-model
+    (Opus) token summary for meta.json.
+
+    ``modelUsage`` and ``total_cost_usd`` are session-wide totals that include
+    every Task sub-agent (proposer / synthesizer / auditor / investigator /
+    critic), not just the orchestrator's own turns --- verified empirically
+    2026-07-12 (a sub-agent-dispatching run reports ~3x the tokens and cost of
+    the same task done inline, and ``total_cost_usd`` equals the summed
+    ``modelUsage`` cost). The top-level ``usage`` block is main-loop only and is
+    deliberately ignored. Returns None when the result carries no ``modelUsage``,
+    so the meta field is simply absent and the results-table cell stays ``?``.
+
+    ``big_input_tokens`` counts every token the model processed, including
+    cache reads/creations (a multi-turn agent re-reads its cached prefix each
+    turn) --- this is the figure comparable to the baselines' per-call tiktoken
+    sums. ``big_input_tokens_no_cache`` is the uncached-input portion only, kept
+    for transparency. The full per-model breakdown is preserved under
+    ``model_usage`` so nothing is lost.
+    """
+    if not result_json:
+        return None
+    model_usage = result_json.get("modelUsage") or {}
+    if not model_usage:
+        return None
+    raw_in = cache_read = cache_creation = big_out = 0
+    for mu in model_usage.values():
+        raw_in += int(mu.get("inputTokens", 0) or 0)
+        cache_read += int(mu.get("cacheReadInputTokens", 0) or 0)
+        cache_creation += int(mu.get("cacheCreationInputTokens", 0) or 0)
+        big_out += int(mu.get("outputTokens", 0) or 0)
+    return {
+        "model_usage": model_usage,
+        "total_cost_usd": result_json.get("total_cost_usd"),
+        "num_turns": result_json.get("num_turns"),
+        "duration_ms": result_json.get("duration_ms"),
+        "session_id": result_json.get("session_id"),
+        "big_input_tokens": raw_in + cache_read + cache_creation,
+        "big_input_tokens_no_cache": raw_in,
+        "big_cache_read_tokens": cache_read,
+        "big_cache_creation_tokens": cache_creation,
+        "big_output_tokens": big_out,
+    }
+
+
 def _run_orchestrator(
-    *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool
+    *, workspace_dir: Path, dataset: str, k_min: int, k_max: int, allow_none: bool,
+    initial_proposers: int | None = None,
 ) -> dict:
     prompt = _orchestrator_prompt(
         workspace_dir=workspace_dir,
@@ -284,6 +353,7 @@ def _run_orchestrator(
         k_min=k_min,
         k_max=k_max,
         allow_none=allow_none,
+        initial_proposers=initial_proposers,
     )
     os.environ["CLUSTERING_WORKSPACE"] = str(workspace_dir)
     # Persist the prompt next to the workspace for post-mortems.
@@ -301,19 +371,48 @@ def _run_orchestrator(
         "--permission-mode", "bypassPermissions",
     ]
     t0 = time.perf_counter()
+    # capture={} routes the call through `--output-format json` so we recover
+    # the session-wide Opus token usage (modelUsage / total_cost_usd, which
+    # include every Task sub-agent). The Claude Code Max subscription meters no
+    # tokens itself, so this is the only place the big-model usage is observable
+    # --- it must be captured live; it cannot be reconstructed after the fact.
+    capture: dict = {}
     stdout = call_claude(
         prompt,
         model=ORCHESTRATOR_MODEL,
         timeout_s=60 * 60 * 4,
         log_prefix=f"[agentic/{dataset}]",
         extra_args=extra_args,
+        capture=capture,
     )
     t1 = time.perf_counter()
     # Save the orchestrator's textual reply (its 5-line summary + any
     # narration) for post-mortems. Subagent outputs go into the workspace
     # under proposals/, audits/, investigations/ as before.
     (workspace_dir / "orchestrator_stdout.txt").write_text(stdout or "", encoding="utf-8")
-    return {"wall_clock_s": t1 - t0, "stdout": stdout}
+    result_json = capture.get("result_json") or {}
+    if result_json:
+        # Persist the full result envelope (usage, modelUsage, cost, session_id,
+        # num_turns) as the raw record behind the meta.json summary.
+        (workspace_dir / "orchestrator_result.json").write_text(
+            json.dumps(result_json, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    usage = _summarize_orchestrator_usage(result_json)
+    if usage is not None:
+        print(
+            f"[agentic/{dataset}] orchestrator usage: "
+            f"big_in={usage['big_input_tokens']:,} (no-cache {usage['big_input_tokens_no_cache']:,}) "
+            f"big_out={usage['big_output_tokens']:,} "
+            f"cost_usd=${usage.get('total_cost_usd') or 0:.2f} turns={usage.get('num_turns')}",
+            flush=True,
+        )
+    else:
+        print(
+            f"[agentic/{dataset}] WARNING: no modelUsage in orchestrator result; "
+            f"big-model tokens will be absent (results-table cell stays '?').",
+            flush=True,
+        )
+    return {"wall_clock_s": t1 - t0, "stdout": stdout, "usage": usage}
 
 
 def _ensure_orchestrator_outputs(workspace_dir: Path) -> None:
@@ -333,6 +432,40 @@ def _ensure_orchestrator_outputs(workspace_dir: Path) -> None:
         )
 
 
+def _reconcile_categories_with_allow_none(categories_path: Path, allow_none: bool) -> int:
+    """Make categories.json's ``none`` entry match the dataset's allow_none
+    policy, reproducing the old ``classify.py --force-assign`` semantics
+    deterministically.
+
+    Post-split, classify.py has no --force-assign flag: it derives behaviour
+    purely from whether a ``{"id": "none"}`` entry is present in categories.json
+    (build_schema / build_system_prompt). Present => ``none`` is a permitted
+    label; absent => the schema enum forces every text onto a real cluster.
+    cluster-finalize appends a ``none`` entry by default (state.py), so for
+    force-assign datasets (allow_none=False) we strip it here rather than relying
+    on the orchestrator having passed --no-none-category. The appended entry
+    mirrors the one state.py writes, so allow_none=True runs are identical
+    whether the orchestrator kept it or we re-add it. Returns the category count.
+    """
+    cats = json.loads(categories_path.read_text(encoding="utf-8"))
+    has_none = any(c.get("id") == "none" for c in cats)
+    if allow_none and not has_none:
+        cats.append({
+            "id": "none",
+            "name": "Out of scope",
+            "description": (
+                "Text does not fit any of the categories above. Use when the "
+                "text is genuinely outside the taxonomy, not just a poor fit."
+            ),
+        })
+    elif not allow_none and has_none:
+        cats = [c for c in cats if c.get("id") != "none"]
+    categories_path.write_text(
+        json.dumps(cats, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    return len(cats)
+
+
 def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool) -> Path:
     load_secrets_into_env()
     required_key = "OPENAI_API_KEY" if CLASSIFY_PROVIDER == "openai" else "ANTHROPIC_API_KEY"
@@ -342,6 +475,21 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
             f"(flat dict, e.g. {{\"{required_key}\": \"...\"}}) or export it as a "
             f"shell env var. classify.py needs it to call the {CLASSIFY_MODEL} API."
         )
+    # Post-split classify.py takes --categories (categories.json), not --prompt,
+    # and drives force-assign off the presence of a `none` entry rather than a
+    # flag. cluster-finalize writes categories.json to the workspace root; we
+    # reconcile its `none` entry with allow_none first (see helper above).
+    categories_path = workspace_dir / "categories.json"
+    if not categories_path.exists():
+        raise FileNotFoundError(
+            f"categories.json not found at {categories_path}; cluster-finalize must "
+            f"run before classify (was the orchestrator/finalize step skipped?)."
+        )
+    n_cats = _reconcile_categories_with_allow_none(categories_path, allow_none)
+    print(
+        f"[classify] categories.json reconciled to allow_none={allow_none} "
+        f"({n_cats} categories, none {'included' if allow_none else 'stripped'})"
+    )
     classify_dir = workspace_dir / "classification" / "classifications"
     classify_dir.mkdir(parents=True, exist_ok=True)
     output_path = classify_dir / "seed_0.csv"
@@ -349,7 +497,7 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
         "--input", str(documents_path),
         "--text-col", "text",
         "--id-col", "doc_id",
-        "--prompt", str(workspace_dir / "classification" / "prompt.md"),
+        "--categories", str(categories_path),
         "--output", str(output_path),
         "--provider", CLASSIFY_PROVIDER,
         "--model", CLASSIFY_MODEL,
@@ -357,8 +505,6 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
     ]
     if CLASSIFY_MODE == "async":
         args += ["--concurrency", str(CLASSIFY_CONCURRENCY)]
-    if not allow_none:
-        args.append("--force-assign")
     _run_uv_script(CLASSIFY_SCRIPT, args)
     return output_path
 
@@ -404,7 +550,9 @@ def _build_predictions(
         if row is None:
             pred_id, pred_label, confidence = NONE_LABEL_ID, NONE_LABEL_NAME, None
         else:
-            cluster_str = (row.get("cluster") or "").strip()
+            # Post-split classify.py writes the assigned cluster id in the
+            # `label` column (was `cluster` under the old prompt-based CLI).
+            cluster_str = (row.get("label") or "").strip()
             if cluster_str in ("", "none"):
                 pred_id, pred_label = NONE_LABEL_ID, NONE_LABEL_NAME
             else:
@@ -444,6 +592,13 @@ def _build_taxonomy_entries(final_taxonomy: dict, id_map: dict[str, int]) -> lis
 DISCOVER_K_FRACTION = 0.2  # discover-k variant uses gold_k ± 20%.
 METHOD_DISCOVER_K = "agentic_clustering_discoverk"
 
+# The published main-results runs (May 22-23) each dispatched 3 proposers in the
+# initial round --- the "2-3" plugin era, pre-commit 2720ff0. The current plugin
+# defaults to 6-7, so every main-results run (given-k or discover-k, any seed)
+# must pin the count to 3 to reproduce the exact configuration behind the
+# reported Table-2 metrics. Same constant measure_agentic_tokens.py pins to.
+PUBLISHED_INITIAL_PROPOSERS = 3
+
 
 def run_agentic_clustering(
     dataset_name: str,
@@ -452,6 +607,7 @@ def run_agentic_clustering(
     skip_classify: bool = False,
     resume_classify: bool = False,
     discover_k: bool = False,
+    initial_proposers: int | None = PUBLISHED_INITIAL_PROPOSERS,
 ) -> dict:
     """Run our method on one dataset. Returns a small row dict for printing.
 
@@ -465,6 +621,11 @@ def run_agentic_clustering(
     to a separate predictions dir (``agentic_clustering_discoverk``) and a
     separate workspace (``seed=<n>_discoverk``) so the given-k artifacts are
     never overwritten.
+
+    ``initial_proposers`` pins the initial-round proposer count; it defaults to
+    PUBLISHED_INITIAL_PROPOSERS=3 so any main-results run reproduces the paper's
+    "2-3 era" configuration rather than the current plugin's 6-7 default. Pass
+    ``None`` to fall back to the shipped SKILL default.
     """
     if skip_classify and resume_classify:
         raise ValueError("skip_classify and resume_classify are mutually exclusive")
@@ -520,6 +681,7 @@ def run_agentic_clustering(
             k_min=k_min,
             k_max=k_max,
             allow_none=lens.allow_none,
+            initial_proposers=initial_proposers,
         )
         print(f"[agentic/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
 
@@ -594,6 +756,7 @@ def run_agentic_clustering(
             "k_in_scope": k_in_scope,
             "k_range": [k_min, k_max],
             "discover_k": discover_k,
+            "initial_proposers": initial_proposers,
             "model_tier": "quality",
             "allow_none": lens.allow_none,
             "llm_input_token_cap": LLM_TOKEN_CAP,
@@ -610,6 +773,12 @@ def run_agentic_clustering(
             "orchestrator_wall_clock_s": orch["wall_clock_s"],
             "resumed_from_existing_workspace": resume_classify,
             "classify_csv_path": str(classify_csv_path),
+            # Big-model (Opus) token usage for the agent loop, captured live
+            # from the orchestrator's `--output-format json` result. Absent on
+            # resume runs (orchestrator not re-dispatched) => results-table cell
+            # stays '?'. Present => build_results_table reads big_input_tokens /
+            # big_output_tokens from here.
+            **({"orchestrator_usage": orch["usage"]} if orch.get("usage") else {}),
         },
     )
 

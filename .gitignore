@@ -20,6 +20,19 @@ __pycache__/
 # Secrets — API keys loaded into os.environ by benchmarking/secrets.py
 secrets.json
 
+# Local planning / run artefacts — kept on disk, not versioned
+PLAN.md
+progress.jsonl
+/logs/
+
+# Anonymized-submission staging (regenerable) — kept local until publication
+/_anon_submission/
+agentic-clustering-anonymous.zip
+
+# Claude Code runtime (worktrees, locks, stray scratch)
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+
 # Editor / OS
 .vscode/
 .idea/
