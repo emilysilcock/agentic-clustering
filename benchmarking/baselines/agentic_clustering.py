@@ -103,6 +103,26 @@ PLUGIN_ROOT = Path(__file__).resolve().parents[2] / "plugin"
 SCRIPTS_DIR = PLUGIN_ROOT / "skills" / "corpus-tools" / "scripts"
 INIT_SCRIPT = SCRIPTS_DIR / "init.py"
 
+# Repo-level helper the /classify-run session uses to start classify.py
+# detached, so a multi-hour batch poll outlives both the session's Bash
+# per-call timeout and the session itself.
+REPO_ROOT = PLUGIN_ROOT.parent
+LAUNCH_DETACHED_SCRIPT = REPO_ROOT / "scripts" / "launch_detached.py"
+
+
+def _venv_python() -> Path:
+    """Interpreter for the detached launcher. Prefer the venv's console
+    python: the launcher itself is short-lived and its own child gets
+    CREATE_NO_WINDOW, so no console is ever shown.
+    """
+    candidate = REPO_ROOT / ".venv" / "Scripts" / "python.exe"
+    if candidate.exists():
+        return candidate
+    candidate = REPO_ROOT / ".venv" / "bin" / "python"
+    if candidate.exists():
+        return candidate
+    return Path(sys.executable)
+
 # The classification scripts were split off into a separate plugin in
 # commit 36861bb. `build_classification_prompt.py` was dissolved entirely
 # (cluster-finalize now writes categories.json directly via state.py:952);
@@ -458,16 +478,31 @@ def _reconcile_categories_with_allow_none(categories_path: Path, allow_none: boo
 
 
 def _classify_prompt(
-    *, workspace_dir: Path, documents_path: Path, output_path: Path, n_texts: int | None
+    *,
+    workspace_dir: Path,
+    documents_path: Path,
+    output_path: Path,
+    n_texts: int | None,
+    launcher_prefix: str,
+    log_path: Path,
 ) -> str:
     """Directions for a headless /classify-run session.
 
     The skill's own workflow asks the user four things — where categories.json
     is, which corpus, which provider, which execution mode. There is no user
     here, so we answer all four up front and let the skill do the rest (prompt
-    assembly, caching, structured outputs, the batch submit/poll, the report).
+    assembly, caching, structured outputs, the report).
     Provider / model / mode are the SPEC §5.6.1 cheap tier, the same values the
     harness used to pass to classify.py itself.
+
+    The one deviation from the skill's step 4 is *how* the command is started.
+    classify.py's batch path submits and then polls in a single blocking
+    process (``while True`` / ``asyncio.sleep(60)`` until the batch is
+    terminal), which for a full corpus runs minutes to hours. Run directly, it
+    would sit inside one Bash tool call and be killed at that tool's per-call
+    timeout, and it would in any case be reaped when this session exits. So the
+    session launches the skill's own command detached and returns; the harness
+    does the waiting.
     """
     mode_clause = (
         f"--mode batch (the corpus has {n_texts} texts; batch is ~50% cheaper "
@@ -481,7 +516,7 @@ Classify a benchmark corpus by running the /classify-run skill.
 CRITICAL — HEADLESS SESSION. This is one non-interactive `claude -p` turn.
 There is NO user: do not ask any questions, do not offer choices, do not wait
 for confirmation before submitting the batch. Every decision the skill would
-normally put to a user is fixed below. Run it to completion in this turn.
+normally put to a user is fixed below.
 
 The classification workspace is ALREADY set up at:
 
@@ -513,8 +548,42 @@ Invoke /classify-run with these answers to its setup questions:
 Do not pass --overwrite. If the output already exists the run should fail
 rather than clobber it — the harness decides when a re-run is allowed.
 
-When the run finishes, print the skill's report: number classified, number of
-errors, cache hit rate, and the output path.
+HOW TO START IT — read this before running anything.
+
+Build the skill's step-4 `classify.py` command exactly as the skill documents
+it, with the flags above. Then do NOT run it in the foreground. Prefix it with
+this launcher, which starts it detached and returns immediately:
+
+    {launcher_prefix} --log "{log_path}" -- <the skill's uv run classify.py command>
+
+Everything after `--` is the skill's command, unchanged. The launcher prints
+`pid=<n> log=<path>` and exits in milliseconds.
+
+Why: classify.py's batch path submits and then polls until the batch is
+terminal, in one blocking process that runs for minutes to hours. In the
+foreground it would exceed this session's Bash per-call timeout, and it would
+be killed when this session ends. Detached, it outlives both, and the harness
+waits for the output CSV.
+
+Then, to confirm the submission actually got off the ground:
+
+1. Wait a short while (a `sleep 45` is fine — one short Bash call).
+2. Read "{log_path}". A healthy OpenAI batch logs an upload line and then
+   `batch id: batch_...`, followed by `status=... completed=N/M`.
+3. If the log shows a traceback or an auth error instead, report that as a
+   failure — do not retry and do not resubmit, since a duplicate batch costs
+   real money.
+
+Do NOT poll the batch to completion yourself, and do NOT wait for the CSV.
+Once you have seen the batch id, report and end your turn:
+
+- the launcher's pid and log path
+- the batch id (or ids, if the corpus was chunked)
+- the command you ran, verbatim
+- whether the log looks healthy
+
+The harness takes it from there.
+
 """
 
 
@@ -563,25 +632,35 @@ def _run_classify(
     except OSError:
         pass
 
+    log_path = workspace_dir / "classification" / "classify.log"
     prompt = _classify_prompt(
         workspace_dir=workspace_dir,
         documents_path=documents_path,
         output_path=output_path,
         n_texts=n_texts,
+        launcher_prefix=f'"{_venv_python()}" "{LAUNCH_DETACHED_SCRIPT}"',
+        log_path=log_path,
     )
     # The skill resolves CLASSIFY_WORKSPACE from the env first, before any
     # pointer-file lookup, so setting it here keeps the session off the
     # .claude/clustering/.active_workspace path entirely.
     os.environ["CLASSIFY_WORKSPACE"] = str(workspace_dir)
+    # The skill's documented command is a plain `uv run`, but uv on this machine
+    # can't TLS-verify with SSL_CERT_FILE set (see _uv_env / the uv TLS
+    # workaround). The harness's own calls pass --native-tls explicitly; we
+    # can't edit the skill's command, so set the environment equivalents here
+    # and let the skill's command work unmodified.
+    os.environ.pop("SSL_CERT_FILE", None)
+    os.environ["UV_NATIVE_TLS"] = "1"
     (workspace_dir / "classify_prompt.txt").write_text(prompt, encoding="utf-8")
     extra_args = [
         "--plugin-dir", str(TEXT_CLASSIFICATION_ROOT),
         "--permission-mode", "bypassPermissions",
     ]
-    # Batch mode blocks on the provider's queue (≤24h SLA), so the session gets
-    # the full window. capture={} records the session's own Opus usage, which is
-    # new overhead the direct classify.py call didn't have — small next to the
-    # agent loop, but it should not be invisible.
+    # The session only submits and reports, so it needs minutes, not hours.
+    # capture={} records its Opus usage, which is new overhead the direct
+    # classify.py call didn't have — small next to the agent loop, but it
+    # should not be invisible.
     capture: dict = {}
     print(
         f"[classify/{dataset}] running /classify-run headless "
@@ -591,7 +670,7 @@ def _run_classify(
     stdout = call_claude(
         prompt,
         model=ORCHESTRATOR_MODEL,
-        timeout_s=60 * 60 * 24,
+        timeout_s=60 * 30,
         log_prefix=f"[classify/{dataset}]",
         extra_args=extra_args,
         capture=capture,
@@ -602,14 +681,99 @@ def _run_classify(
         (workspace_dir / "classify_session_result.json").write_text(
             json.dumps(result_json, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-    if not output_path.exists():
-        raise RuntimeError(
-            f"/classify-run session returned but {output_path} was not written. "
-            f"See {workspace_dir / 'classify_stdout.txt'} for what the session did. "
-            f"If a batch was submitted but never collected, "
-            f"scripts/recover_orphan_batches.py can pick it up."
-        )
+    _await_classify_output(
+        output_path=output_path,
+        log_path=log_path,
+        dataset=dataset,
+        session_stdout_path=workspace_dir / "classify_stdout.txt",
+    )
     return output_path
+
+
+def _read_pid(pid_path: Path) -> int | None:
+    try:
+        return int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _pid_alive(pid: int) -> bool:
+    """Best-effort liveness check for the detached classify process."""
+    if sys.platform == "win32":
+        out = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True,
+            text=True,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        ).stdout
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return False
+    return True
+
+
+def _await_classify_output(
+    *,
+    output_path: Path,
+    log_path: Path,
+    dataset: str,
+    session_stdout_path: Path,
+    timeout_s: float = 60 * 60 * 24,
+    poll_s: float = 60.0,
+) -> None:
+    """Block until the detached classify process writes its output CSV.
+
+    This is where the long wait lives now. The session that submitted the batch
+    has already exited; the work continues in a detached process, so the only
+    things to watch are the output file and the process itself. A batch that is
+    still running with a dead writer is recoverable — the batch id is in the
+    log — so say so rather than silently hanging until the timeout.
+    """
+    pid = _read_pid(Path(str(log_path) + ".pid"))
+    deadline = time.time() + timeout_s
+    last_line = ""
+    grace_checks = 3  # tolerate a not-yet-visible pid right after launch
+
+    while time.time() < deadline:
+        if output_path.exists():
+            print(f"[classify/{dataset}] output ready: {output_path}", flush=True)
+            return
+        # Surface the newest progress line so a long batch isn't a silent wait.
+        try:
+            lines = [
+                ln.strip()
+                for ln in log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+                if ln.strip()
+            ]
+            if lines and lines[-1] != last_line:
+                last_line = lines[-1]
+                print(f"[classify/{dataset}] {last_line}", flush=True)
+        except OSError:
+            pass
+
+        if pid is not None and not _pid_alive(pid):
+            if grace_checks > 0:
+                grace_checks -= 1
+            else:
+                raise RuntimeError(
+                    f"detached classify process (pid {pid}) exited without writing "
+                    f"{output_path}.\nLog: {log_path}\nSession transcript: "
+                    f"{session_stdout_path}\nIf the log shows a submitted batch id, "
+                    f"the batch is still billable and collectable — "
+                    f"scripts/recover_orphan_batches.py can pick it up rather than "
+                    f"resubmitting."
+                )
+        else:
+            grace_checks = 3
+        time.sleep(poll_s)
+
+    raise TimeoutError(
+        f"classify did not finish within {timeout_s / 3600:.1f}h for {dataset}. "
+        f"Log: {log_path}. The batch may still be in flight; check it before "
+        f"resubmitting (a duplicate batch is a duplicate bill)."
+    )
 
 
 def _read_final_taxonomy(workspace_dir: Path) -> dict:
