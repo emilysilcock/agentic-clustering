@@ -109,15 +109,14 @@ INIT_SCRIPT = SCRIPTS_DIR / "init.py"
 TEXT_CLASSIFICATION_ROOT = PLUGIN_ROOT.parents[1] / "text-classification" / "plugin"
 CLASSIFY_SCRIPT = TEXT_CLASSIFICATION_ROOT / "skills" / "classify-tools" / "scripts" / "classify.py"
 
-# Agent-dispatch budget for the orchestrator (Proposer + Synthesizer + Auditor
-# + Critic + Investigator combined, counted cumulatively across the whole run).
-# Matches the cluster-run SKILL.md hard checkpoint — both were raised from 8
-# on 2026-06-05 because audits across the 7-dataset sweep showed the Investigator
-# was dispatched on only 2 of 7 runs, with the 8-cap leaving no headroom beyond
-# the baseline 6 (3 proposer + synth + auditor + critic). At 20, a single
-# investigate → re-audit cycle (~2 slots) is cheap and the orchestrator can
-# afford ~7 such cycles before hitting the cap.
-MAX_AGENT_DISPATCHES = 20
+# There is deliberately no agent-dispatch cap here. The harness must exercise
+# the shipped plugin's own control flow, so the orchestrator stops on the
+# state-grounded criteria in cluster-run/SKILL.md ("When NOT to Continue":
+# critic satisfied + coverage >85%, or diminishing returns) and nothing else.
+# Earlier revisions imposed a cumulative cap (8 until 2026-06-05, then 20),
+# mirroring the SKILL.md hard checkpoint that issue #2 removed; the cap went
+# with it, since a benchmark-only stopping rule measures the harness rather
+# than the method. Results published before 2026-09-16 were produced at 20.
 
 # SPEC §5.1.1 / §5.6.3: every method that feeds a document body to an LLM caps
 # it at 512 tiktoken cl100k_base tokens. The ClusterLLM / Huang & He / TopicGPT
@@ -263,10 +262,10 @@ benchmark-mode constraints:
 5. {none_clause}
 6. Iterate (Proposer → Synthesizer → Auditor → Critic, dispatching Investigator
    on demand) until the standard stop criteria fire (Critic 'ready', coverage
-   >85%, diminishing returns), OR you have dispatched {MAX_AGENT_DISPATCHES} agents — whichever
-   comes first (this matches the cluster-run skill's hard checkpoint; there is
-   no user to confirm continuation in benchmark mode). When stop criteria
-   fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
+   >85%, diminishing returns). There is no dispatch cap: keep iterating while
+   the taxonomy is still improving and stop when it is not, exactly as the
+   skill describes. A dispatch count is not a stopping condition. When stop
+   criteria fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
    AND categories.json (the canonical handoff to the text-classification
    plugin's /classify-run). Do NOT run classify.py — the benchmark harness
    handles that.

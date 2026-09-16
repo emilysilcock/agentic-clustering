@@ -374,12 +374,15 @@ After every 2-3 agent dispatches, update the user:
 - What you plan to do next
 - Ask if they want to steer in a different direction
 
-**Hard checkpoint**: After 20 agent dispatches without explicit user input,
-STOP and report. Don't keep going — the user should confirm direction.
-The baseline P→S→A→C cycle is 9-10 dispatches (6-7 proposers + synth +
-auditor + critic); the remaining budget is for Investigator passes (each
-typically costs ~2 slots, since a structural change resets coverage and
-warrants a re-audit) and any follow-up proposer / synth refinements.
+These are reports, not stops — deliver the update and carry on working. Only
+stop when one of the conditions in **When NOT to Continue** fires. There is
+deliberately no dispatch cap: a dispatch count tells you nothing about whether
+the taxonomy is converging or whether there is a question only the user can
+answer, so a long run that is still improving should continue and a short one
+that has stalled should not. For orientation, the baseline P→S→A→C cycle is
+9-10 dispatches (6-7 proposers + synth + auditor + critic), and each
+Investigator pass costs ~2 more, since a structural change resets coverage and
+warrants a re-audit.
 
 ## Before Stopping
 
