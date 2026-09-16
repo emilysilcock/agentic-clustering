@@ -16,10 +16,13 @@ Drives the plugin's iterative cluster-discovery workflow headlessly across the
   2. Invoke ``claude -p`` on Opus 4.7 (via the Max subscription) with an
      orchestration prompt that runs the cluster-run loop to completion and
      finalises.
-  3. Build the classification prompt — with ``--force-assign`` for the 5
-     datasets whose gold labels don't include an OOS/none class.
-  4. Classify the full corpus via classify.py on gpt-5-mini in async mode
-     (concurrency=20) with prompt caching. Switched from Claude Haiku 4.5 on
+  3. Reconcile the finalized categories.json against the dataset's label
+     policy: strip its ``none`` entry for the 5 datasets whose gold labels
+     don't include an OOS/none class (post-split classify.py derives
+     force-assign from the category set, not a flag).
+  4. Classify the full corpus by running the /classify-run skill in a second
+     headless ``claude -p`` session — the same path a plugin user takes —
+     on gpt-5-mini in batch mode with prompt caching. Switched from Claude Haiku 4.5 on
      2026-05-23 because Haiku 4.5's cache threshold is empirically ~4096
      tokens and our smaller-k taxonomies fell below that, causing 0%
      cache hits on three of seven datasets. OpenAI caches automatically
@@ -280,8 +283,8 @@ benchmark-mode constraints:
    skill describes. A dispatch count is not a stopping condition. When stop
    criteria fire, run cluster-finalize — it writes taxonomy.md, final_taxonomy.json,
    AND categories.json (the canonical handoff to the text-classification
-   plugin's /classify-run). Do NOT run classify.py — the benchmark harness
-   handles that.
+   plugin's /classify-run). Stop there: do NOT classify. The harness runs
+   /classify-run itself, in a separate headless session, once you are done.
 
 Finally, print a 5-line summary: number of iterations, final k, coverage,
 mean confidence, and any caveats.
@@ -454,7 +457,80 @@ def _reconcile_categories_with_allow_none(categories_path: Path, allow_none: boo
     return len(cats)
 
 
-def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool) -> Path:
+def _classify_prompt(
+    *, workspace_dir: Path, documents_path: Path, output_path: Path, n_texts: int | None
+) -> str:
+    """Directions for a headless /classify-run session.
+
+    The skill's own workflow asks the user four things — where categories.json
+    is, which corpus, which provider, which execution mode. There is no user
+    here, so we answer all four up front and let the skill do the rest (prompt
+    assembly, caching, structured outputs, the batch submit/poll, the report).
+    Provider / model / mode are the SPEC §5.6.1 cheap tier, the same values the
+    harness used to pass to classify.py itself.
+    """
+    mode_clause = (
+        f"--mode batch (the corpus has {n_texts} texts; batch is ~50% cheaper "
+        f"and the SLA is fine for a benchmark)"
+        if CLASSIFY_MODE == "batch"
+        else f"--mode async --concurrency {CLASSIFY_CONCURRENCY}"
+    )
+    return f"""\
+Classify a benchmark corpus by running the /classify-run skill.
+
+CRITICAL — HEADLESS SESSION. This is one non-interactive `claude -p` turn.
+There is NO user: do not ask any questions, do not offer choices, do not wait
+for confirmation before submitting the batch. Every decision the skill would
+normally put to a user is fixed below. Run it to completion in this turn.
+
+The classification workspace is ALREADY set up at:
+
+    {workspace_dir}
+
+`CLASSIFY_WORKSPACE` is already exported in this session's environment and
+points there, so the skill's workspace-resolution block is a no-op — do not
+re-export it and do not go looking for a pointer file.
+
+These are Windows paths running under Git Bash: put every path in double
+quotes in every command, or the backslashes will be eaten as escapes.
+
+`categories.json` is already there, written by cluster-finalize and then
+reconciled by the harness to this dataset's label policy. Do NOT edit it, do
+NOT add or remove a `none` entry, and do NOT regenerate it — its category set
+is the experimental condition. Use it exactly as it is.
+
+Invoke /classify-run with these answers to its setup questions:
+
+1. categories.json  -> {workspace_dir / "categories.json"}
+2. corpus           -> {documents_path}
+                       --text-col text --id-col doc_id
+3. provider / model -> --provider {CLASSIFY_PROVIDER} --model {CLASSIFY_MODEL}
+4. execution mode   -> {mode_clause}
+5. output           -> --output {output_path}
+                       (exact path; the harness reads this file by name, so do
+                       not use the skill's timestamped run_<...>.csv default)
+
+Do not pass --overwrite. If the output already exists the run should fail
+rather than clobber it — the harness decides when a re-run is allowed.
+
+When the run finishes, print the skill's report: number classified, number of
+errors, cache hit rate, and the output path.
+"""
+
+
+def _run_classify(
+    *, workspace_dir: Path, documents_path: Path, allow_none: bool, dataset: str = "?"
+) -> Path:
+    """Classify the full corpus through the text-classification plugin's
+    /classify-run skill, in a headless Claude Code session.
+
+    This deliberately goes through the skill rather than calling classify.py
+    directly: the benchmark should exercise the same path a user gets. The
+    harness still owns the two things that are experimental conditions rather
+    than user choices — the categories.json `none` policy (reconciled below)
+    and the cheap-tier provider/model/mode — and it still reads the output CSV
+    itself for metrics and cost.
+    """
     load_secrets_into_env()
     required_key = "OPENAI_API_KEY" if CLASSIFY_PROVIDER == "openai" else "ANTHROPIC_API_KEY"
     if not os.environ.get(required_key):
@@ -463,10 +539,8 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
             f"(flat dict, e.g. {{\"{required_key}\": \"...\"}}) or export it as a "
             f"shell env var. classify.py needs it to call the {CLASSIFY_MODEL} API."
         )
-    # Post-split classify.py takes --categories (categories.json), not --prompt,
-    # and drives force-assign off the presence of a `none` entry rather than a
-    # flag. cluster-finalize writes categories.json to the workspace root; we
-    # reconcile its `none` entry with allow_none first (see helper above).
+    # cluster-finalize writes categories.json to the workspace root; reconcile
+    # its `none` entry with allow_none before the skill reads it (see above).
     categories_path = workspace_dir / "categories.json"
     if not categories_path.exists():
         raise FileNotFoundError(
@@ -481,19 +555,60 @@ def _run_classify(*, workspace_dir: Path, documents_path: Path, allow_none: bool
     classify_dir = workspace_dir / "classification" / "classifications"
     classify_dir.mkdir(parents=True, exist_ok=True)
     output_path = classify_dir / "seed_0.csv"
-    args = [
-        "--input", str(documents_path),
-        "--text-col", "text",
-        "--id-col", "doc_id",
-        "--categories", str(categories_path),
-        "--output", str(output_path),
-        "--provider", CLASSIFY_PROVIDER,
-        "--model", CLASSIFY_MODEL,
-        "--mode", CLASSIFY_MODE,
+
+    n_texts: int | None = None
+    try:
+        with open(documents_path, encoding="utf-8") as f:
+            n_texts = sum(1 for line in f if line.strip())
+    except OSError:
+        pass
+
+    prompt = _classify_prompt(
+        workspace_dir=workspace_dir,
+        documents_path=documents_path,
+        output_path=output_path,
+        n_texts=n_texts,
+    )
+    # The skill resolves CLASSIFY_WORKSPACE from the env first, before any
+    # pointer-file lookup, so setting it here keeps the session off the
+    # .claude/clustering/.active_workspace path entirely.
+    os.environ["CLASSIFY_WORKSPACE"] = str(workspace_dir)
+    (workspace_dir / "classify_prompt.txt").write_text(prompt, encoding="utf-8")
+    extra_args = [
+        "--plugin-dir", str(TEXT_CLASSIFICATION_ROOT),
+        "--permission-mode", "bypassPermissions",
     ]
-    if CLASSIFY_MODE == "async":
-        args += ["--concurrency", str(CLASSIFY_CONCURRENCY)]
-    _run_uv_script(CLASSIFY_SCRIPT, args)
+    # Batch mode blocks on the provider's queue (≤24h SLA), so the session gets
+    # the full window. capture={} records the session's own Opus usage, which is
+    # new overhead the direct classify.py call didn't have — small next to the
+    # agent loop, but it should not be invisible.
+    capture: dict = {}
+    print(
+        f"[classify/{dataset}] running /classify-run headless "
+        f"({CLASSIFY_PROVIDER}/{CLASSIFY_MODEL}, mode={CLASSIFY_MODE})",
+        flush=True,
+    )
+    stdout = call_claude(
+        prompt,
+        model=ORCHESTRATOR_MODEL,
+        timeout_s=60 * 60 * 24,
+        log_prefix=f"[classify/{dataset}]",
+        extra_args=extra_args,
+        capture=capture,
+    )
+    (workspace_dir / "classify_stdout.txt").write_text(stdout or "", encoding="utf-8")
+    result_json = capture.get("result_json") or {}
+    if result_json:
+        (workspace_dir / "classify_session_result.json").write_text(
+            json.dumps(result_json, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    if not output_path.exists():
+        raise RuntimeError(
+            f"/classify-run session returned but {output_path} was not written. "
+            f"See {workspace_dir / 'classify_stdout.txt'} for what the session did. "
+            f"If a batch was submitted but never collected, "
+            f"scripts/recover_orphan_batches.py can pick it up."
+        )
     return output_path
 
 
@@ -683,6 +798,7 @@ def run_agentic_clustering(
         workspace_dir=workspace_dir,
         documents_path=documents_path,
         allow_none=lens.allow_none,
+        dataset=dataset_name,
     )
     t_end = time.perf_counter()
 

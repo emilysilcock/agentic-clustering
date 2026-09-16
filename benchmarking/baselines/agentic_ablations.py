@@ -273,7 +273,8 @@ def run_synthonly(dataset_name: str, *, seed: int = 0, reuse_existing_classify: 
         )
         t0 = time.perf_counter()
         classify_csv_path = _run_classify(
-            workspace_dir=out_ws, documents_path=documents_path, allow_none=lens.allow_none
+            workspace_dir=out_ws, documents_path=documents_path,
+            allow_none=lens.allow_none, dataset=dataset_name,
         )
         wall_clock_s = time.perf_counter() - t0
 
@@ -481,7 +482,8 @@ def run_notask(dataset_name: str, *, seed: int = 0, resume_classify: bool = Fals
         f"{CLASSIFY_MODEL} (force_assign={not lens.allow_none})"
     )
     classify_csv_path = _run_classify(
-        workspace_dir=workspace_dir, documents_path=documents_path, allow_none=lens.allow_none
+        workspace_dir=workspace_dir, documents_path=documents_path,
+        allow_none=lens.allow_none, dataset=dataset_name,
     )
     t_end = time.perf_counter()
 
@@ -738,7 +740,8 @@ def run_nok(dataset_name: str, *, seed: int = 0, resume_classify: bool = False) 
         f"{CLASSIFY_MODEL} (force_assign={not lens.allow_none})"
     )
     classify_csv_path = _run_classify(
-        workspace_dir=workspace_dir, documents_path=documents_path, allow_none=lens.allow_none
+        workspace_dir=workspace_dir, documents_path=documents_path,
+        allow_none=lens.allow_none, dataset=dataset_name,
     )
     t_end = time.perf_counter()
 
