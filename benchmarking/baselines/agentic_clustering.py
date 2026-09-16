@@ -232,9 +232,8 @@ def _orchestrator_prompt(
     proposer_clause = (
         f"\n7. In the INITIAL proposal round, dispatch exactly {initial_proposers} "
         f"proposers in parallel, overriding the cluster-run skill's default "
-        f"proposer count. This reproduces the proposer configuration of the "
-        f"reported main results. Follow-up targeted proposer / investigator "
-        f"dispatches later in the loop proceed as normal."
+        f"proposer count. Follow-up targeted proposer / investigator dispatches "
+        f"later in the loop proceed as normal."
         if initial_proposers is not None
         else ""
     )
@@ -592,11 +591,12 @@ def _build_taxonomy_entries(final_taxonomy: dict, id_map: dict[str, int]) -> lis
 DISCOVER_K_FRACTION = 0.2  # discover-k variant uses gold_k ± 20%.
 METHOD_DISCOVER_K = "agentic_clustering_discoverk"
 
-# The published main-results runs (May 22-23) each dispatched 3 proposers in the
-# initial round --- the "2-3" plugin era, pre-commit 2720ff0. The current plugin
-# defaults to 6-7, so every main-results run (given-k or discover-k, any seed)
-# must pin the count to 3 to reproduce the exact configuration behind the
-# reported Table-2 metrics. Same constant measure_agentic_tokens.py pins to.
+# The main-results runs of May 22-23 each dispatched 3 proposers in the initial
+# round --- the "2-3" plugin era, pre-commit 2720ff0. Kept here so those runs
+# can still be reproduced exactly (pass initial_proposers=3), but it is NOT a
+# default: the harness follows whatever the shipped skill currently says, which
+# since 2720ff0 is 6-7. Pinning it by default would make the benchmark measure
+# a frozen configuration rather than the method as published in the plugin.
 PUBLISHED_INITIAL_PROPOSERS = 3
 
 
@@ -607,7 +607,7 @@ def run_agentic_clustering(
     skip_classify: bool = False,
     resume_classify: bool = False,
     discover_k: bool = False,
-    initial_proposers: int | None = PUBLISHED_INITIAL_PROPOSERS,
+    initial_proposers: int | None = None,
 ) -> dict:
     """Run our method on one dataset. Returns a small row dict for printing.
 
@@ -622,10 +622,10 @@ def run_agentic_clustering(
     separate workspace (``seed=<n>_discoverk``) so the given-k artifacts are
     never overwritten.
 
-    ``initial_proposers`` pins the initial-round proposer count; it defaults to
-    PUBLISHED_INITIAL_PROPOSERS=3 so any main-results run reproduces the paper's
-    "2-3 era" configuration rather than the current plugin's 6-7 default. Pass
-    ``None`` to fall back to the shipped SKILL default.
+    ``initial_proposers`` pins the initial-round proposer count. It defaults to
+    ``None``, which leaves the count to the shipped cluster-run skill (currently
+    6-7), so a default run measures the plugin as published. Pass
+    PUBLISHED_INITIAL_PROPOSERS=3 to reproduce the May 22-23 main-results runs.
     """
     if skip_classify and resume_classify:
         raise ValueError("skip_classify and resume_classify are mutually exclusive")

@@ -605,8 +605,8 @@ def _nok_orchestrator_prompt(*, workspace_dir, dataset, n_docs, allow_none) -> s
         "natural number of clusters the corpus supports from the data and the "
         "task description alone; do NOT infer a target from the nominal k_range "
         "shown in summary.md (it is a non-binding sentinel spanning 2..N). "
-        "Dispatch 2-3 proposers to start (matching the paper's proposer regime); "
-        "do NOT scale the proposer count up on account of the wide nominal range."
+        "Use the initial proposer count the cluster-run skill specifies, and do "
+        "NOT scale it up on account of the wide nominal range."
     )
     return prompt.replace(needle, replacement)
 

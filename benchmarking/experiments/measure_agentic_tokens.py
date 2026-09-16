@@ -66,12 +66,12 @@ SWEEP_ORDER = [
 # builder globs), so it can never pollute the averaged metric cells.
 OUT_DIR = RESULTS / "agentic_token_measurement"
 
-# The published main-results runs (May 22-23) each dispatched 3 proposers in
-# the initial round (the "2-3" plugin era, pre-commit 2720ff0). The current
-# plugin defaults to 6-7, so we pin the count to reproduce the configuration
-# that produced the Table-2 metric cells --- otherwise the big-model token
-# figure would describe a more expensive pipeline than the reported accuracy.
-PUBLISHED_INITIAL_PROPOSERS = 3
+# The proposer count is deliberately NOT pinned here. The token figure has to
+# describe the same pipeline as the metric cells it sits beside, and those are
+# produced by the default (unpinned) harness, which follows the shipped skill's
+# current 6-7. This used to pin 3 to match the May 22-23 runs behind the older
+# Table-2 cells; if you ever re-measure tokens for those specific runs, pass
+# agentic_clustering.PUBLISHED_INITIAL_PROPOSERS explicitly below.
 
 
 def _workspace_for(dataset: str, discover_k: bool):
@@ -120,7 +120,6 @@ def _measure_one(dataset: str, *, discover_k: bool) -> dict | None:
         k_min=k_min,
         k_max=k_max,
         allow_none=lens.allow_none,
-        initial_proposers=PUBLISHED_INITIAL_PROPOSERS,
     )
     # Sanity: the finalize outputs should exist (a well-formed run), but a
     # missing one shouldn't discard the token capture we came for.

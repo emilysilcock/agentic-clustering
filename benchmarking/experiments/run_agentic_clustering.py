@@ -116,12 +116,12 @@ def main() -> None:
     parser.add_argument(
         "--initial-proposers",
         type=int,
-        default=PUBLISHED_INITIAL_PROPOSERS,
+        default=None,
         help=(
-            "Number of proposers to dispatch in the initial round. Defaults to "
-            "%(default)s to reproduce the published main-results configuration "
-            "(the '2-3' plugin era, pinned to 3); the current plugin default is "
-            "6-7. Pass a different value only to deviate deliberately."
+            "Number of proposers to dispatch in the initial round. Left unset by "
+            "default, so the count is whatever the shipped cluster-run skill says "
+            f"(currently 6-7). Pass {PUBLISHED_INITIAL_PROPOSERS} to reproduce the "
+            "May 22-23 main-results runs, from the '2-3' plugin era."
         ),
     )
     args = parser.parse_args()
