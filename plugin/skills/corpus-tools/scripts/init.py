@@ -100,8 +100,8 @@ def _load_json(path: Path, text_col: str, id_col: str | None) -> list[dict]:
 
 
 def _load_jsonl(path: Path, text_col: str, id_col: str | None) -> list[dict]:
-    """JSON-lines: one object per line. Matches the canonical `documents.jsonl`
-    layout in benchmarking/data_processing/."""
+    """JSON-lines: one object per line, each with a text field and optionally
+    an id field."""
     lookup_id = id_col or "id"
     records = []
     # utf-8-sig tolerates a leading BOM (PowerShell 5.1 quirk).

@@ -95,15 +95,31 @@ When the run converges, it suggests finalizing. Reply "go ahead", and it dispatc
 ```markdown
 # Cluster Taxonomy
 
-## c1 — Economic hardship
+**Corpus**: ./responses.csv (18 texts)
+**Clusters**: 3
+**Coverage**: ~100%
+**Mean confidence**: 4.6
+**Cluster version**: 2
+**Per-cluster audit sample**: median n=6 (minimum 5)
+
+---
+
+## Economic hardship (`c1`) [high, n=7]
+
 Concerns about wages, prices, housing affordability, and job availability …
 
-## c2 — Healthcare access and cost
-Difficulty affording insurance, prescriptions, and timely medical care …
+**Examples:**
 
-## c3 — Climate and environmental decline
-Worsening wildfires, extreme weather, pollution, and long-term climate risk …
+> Rent has gone up twice this year and my pay hasn't moved.
+
+---
+
+## Healthcare access and cost (`c2`) [high, n=6]
+
+Difficulty affording insurance, prescriptions, and timely medical care …
 ```
+
+The bracket after each cluster carries its confidence label and the number of audited texts that label rests on. A cluster whose audit sample is too thin to support a label doesn't get one — `/cluster-finalize` won't export until every cluster clears the per-cluster minimum, so in practice you either see a real label or the run is still going.
 
 ### 3. Classify the corpus into the taxonomy
 
@@ -223,43 +239,17 @@ If you have the [GitHub CLI](https://cli.github.com/) (`gh`) installed and authe
 
 Discovery is an orchestrated loop of specialised subagents — proposer, synthesizer, auditor, investigator, critic — that converges on a stable, well-supported taxonomy with measured coverage and cross-proposal agreement. Classification then applies that taxonomy at scale through a cheap external model, with prompt caching and schema-enforced outputs so that every text lands in a valid cluster.
 
-## This repository
-
-This README is the single source of documentation for the repo. The plugin itself lives in `plugin/` and is the only thing shipped to plugin users; the rest of the repository is the experimental evaluation for the paper introducing the method.
+## What's inside the plugin
 
 ```
-plugin/              the Claude Code plugin (this directory)
-  .claude-plugin/      plugin manifest (plugin.json)
-  skills/              plugin skills (cluster-run, cluster-investigate, etc.)
-  agents/              subagent definitions (proposer, synthesizer, auditor, investigator, critic)
-  hooks/               post-subagent validation + summary hooks
-  examples/            the bundled example corpus
-benchmarking/        paper experiments — Python package for evaluating the plugin against baselines
-  data_processing/     HuggingFace download + preprocessing (see its README for the dataset loaders)
-  baselines/           prior clustering methods
-  evaluation/          shared metrics
-  experiments/         runner scripts (benchmark x method)
-slurm/               FASRC/SLURM harness for the GPU-bound baseline phases (see its README)
-data/                benchmark data (gitignored — downloaded from HuggingFace)
-results/             figures, tables, logs, predictions (gitignored)
-paper/               manuscript
+.claude-plugin/      plugin manifest (plugin.json)
+skills/              plugin skills (cluster-run, cluster-investigate, etc.)
+agents/              subagent definitions (proposer, synthesizer, auditor, investigator, critic)
+hooks/               post-subagent validation + summary hooks
+examples/            the bundled example corpus
 ```
 
-### Paper experiments
-
-```bash
-uv sync
-uv run python -m benchmarking.experiments.<name>
-```
-
-Data-processing entry points should call `ensure_data_dirs()` from `benchmarking.paths` so `data/raw/` and `data/derived/` exist on a fresh clone:
-
-```python
-from benchmarking.paths import ensure_data_dirs, DATA_RAW
-ensure_data_dirs()
-```
-
-Two internal READMEs document harness details that do not belong here: [`benchmarking/data_processing/README.md`](../benchmarking/data_processing/README.md) covers the seven benchmark dataset loaders and their unified schema, and [`slurm/README.md`](../slurm/README.md) covers running the ClusterLLM baseline's GPU phases on a SLURM cluster.
+The method is introduced in a paper, and the experiments evaluating it against prior clustering methods live alongside the plugin in the [source repository](https://github.com/emilysilcock/agentic-clustering) — they are not part of what gets installed. See that repository's own README if you want to reproduce them.
 
 ## Authors
 
