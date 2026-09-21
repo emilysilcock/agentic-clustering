@@ -27,6 +27,8 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+from _audit_metrics import MIN_AUDIT_N_PER_CLUSTER, audit_power
+
 
 def render_summary(
     state: dict,
@@ -81,6 +83,59 @@ def render_summary(
             lines.append(f"- **{c['id']}**: {c['name']} [{conf}]{audit_info}")
             lines.append(f"  {c['description']}")
         lines.append("")
+
+        # Per-cluster audit power. The orchestrator needs this to tell a
+        # genuinely weak cluster apart from one that simply hasn't been
+        # sampled enough — a uniform draw gives the rarest clusters the
+        # fewest texts, which is backwards for measuring their fit.
+        #
+        # Gated on at least one audit having run: before that every cluster is
+        # trivially below the floor, and saying so would push the orchestrator
+        # toward a stratified draw before it has taken a coverage draw.
+        power = audit_power(state["clusters"])
+        if meta.get("total_audits", 0) and power["below_floor"]:
+            def _fmt(rows: list[dict], limit: int = 12) -> str:
+                out = ", ".join(f"{d['id']}(n={d['n']})" for d in rows[:limit])
+                if len(rows) > limit:
+                    out += f" +{len(rows) - limit} more"
+                return out
+
+            lines.append("## Per-Cluster Audit Sample")
+            lines.append(
+                f"- **Median n**: {power['median_n']} "
+                f"(floor for a publishable confidence label: "
+                f"n>={MIN_AUDIT_N_PER_CLUSTER})"
+            )
+            if power["needs_audit"]:
+                lines.append(
+                    f"- **Under-sampled** ({len(power['needs_audit'])}/"
+                    f"{power['n_clusters']}): {_fmt(power['needs_audit'])}"
+                )
+                lines.append(
+                    f"  These have not been searched for. Draw for them with "
+                    f"`sample.py --strategy stratified --per-cluster "
+                    f"{MIN_AUDIT_N_PER_CLUSTER}` (~{power['total_needed']} more "
+                    f"assignments), audited with `\"sample_basis\": \"stratified\"` "
+                    f"and its strata manifest in `strata_file`. **Audit these.**"
+                )
+            if power["unsupported"]:
+                lines.append(
+                    f"- **Unsupported** ({len(power['unsupported'])}/"
+                    f"{power['n_clusters']}): "
+                    + ", ".join(
+                        f"{d['id']}(n={d['n']} of {d['targeted']} aimed)"
+                        for d in power["unsupported"][:12]
+                    )
+                )
+                lines.append(
+                    "  Candidates were drawn for these and the auditor assigned "
+                    "them elsewhere, so repeating the same draw won't move them. "
+                    "**Investigate these, don't re-audit.** Find where the "
+                    "candidates went: a neighbour absorbing them argues for a "
+                    "merge or a sharper boundary; nothing absorbing them argues "
+                    "the corpus doesn't support the cluster."
+                )
+            lines.append("")
 
     if (
         meta.get("coverage")

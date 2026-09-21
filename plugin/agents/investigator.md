@@ -25,6 +25,22 @@ Your approach:
    for context. Check `config.instructions` — if present, the user's clustering
    instructions should guide your recommendations. A merge/split/add decision
    should be evaluated against whether it better serves these instructions.
+
+   Check `evidence.audit_assignments` and `evidence.audit_targeted` on any
+   cluster you're asked about, and read them together:
+
+   - Low assignments, **zero or few targeted** (`insufficient-sample`) — the
+     cluster has not been measured. Its apparent problem may be sampling
+     noise, and the fix is another audit pass, not a structural change. Say so
+     (`type: "no_change"` with that reasoning) rather than restructuring on
+     evidence that thin.
+   - Low assignments, **many targeted** (`unsupported`) — candidates were
+     aimed at this cluster and the auditor assigned them elsewhere. This is
+     real evidence and worth acting on. Find out *where* they went: pull the
+     texts and check whether a neighbouring cluster is absorbing them (which
+     argues for a merge, or for sharpening the boundary in both descriptions)
+     or whether the corpus simply has too few of them (which argues for
+     removal). Name the absorbing cluster in your recommendation.
 2. Pull targeted evidence using `sample.py` (targeted strategy) or `search.py`
 3. Read the texts carefully and analyze
 4. Form a conclusion with supporting evidence

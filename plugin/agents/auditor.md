@@ -31,7 +31,40 @@ Your workflow:
    Reserve `"cluster_id": null` for texts that don't fit any cluster
    structurally.
 2. Use `sample.py` to pull fresh texts (seen texts are excluded by default,
-   so you'll get genuinely fresh texts without any extra flags)
+   so you'll get genuinely fresh texts without any extra flags). Your task
+   description says which of the two draws you are doing:
+
+   - **Coverage draw** (`--strategy random`, the default) — a uniform sample.
+     This is what the headline coverage and mean-confidence figures are
+     computed from, so it must stay uniform. Declare
+     `"sample_basis": "random"` in your output.
+   - **Per-cluster draw** (`--strategy stratified`) — a
+     floor of texts for the clusters that are *short*, thinnest first, so
+     every cluster's confidence label rests on a defensible n instead of on
+     whatever a uniform draw happened to give it. Clusters already at the
+     floor are skipped automatically. Declare
+     `"sample_basis": "stratified"`, and **copy the `Strata manifest: <path>`
+     line `sample.py` prints into the audit's `strata_file` field** — that is
+     what lets the workspace tell "8 texts were aimed at this cluster and the
+     auditor rejected them" (a finding about the cluster) from "nothing was
+     aimed at this cluster" (a fact about the sample). Without it the two
+     collapse into one.
+
+     Candidates are ranked by similarity to each cluster's description, so
+     the draw is only as good as the descriptions. `--seed-from assigned`
+     ranks by the cluster's already-assigned texts instead; it did not beat
+     the default in testing, so use it only if your task description says to.
+
+   Write each draw to its **own** audit file with its own `sample_basis`.
+   Never pool the two into one file: a stratified draw over-represents each
+   cluster's own region by design, so folding it into the coverage figure
+   would overstate how much of the corpus the taxonomy covers. The basis
+   field is what keeps `state.py update-from-audit` from making that mistake.
+   On a stratified draw, judge each text on its merits. The draw is a
+   *hypothesis* about which cluster a text might belong to, built from TF-IDF
+   similarity to the cluster descriptions — it is not a hint and it is not
+   given to you. Plenty of the texts will belong somewhere else or nowhere,
+   and saying so is the point.
 3. For EACH text, decide:
    - Which cluster fits best (or "none")
    - Confidence score — **INTEGER 1-5, never decimals, never 0-1 scale**.
@@ -56,6 +89,8 @@ obvious cases isn't a good cluster — flag it.
   "timestamp": "...",
   "n_texts": 80,
   "sample_method": "random, exclude-seen",
+  "sample_basis": "random",  // "random" or "stratified" — see step 2
+  "strata_file": null,       // stratified draws only: sample.py's manifest path
   "cluster_definitions_version": 3,
   "assignments": [
     {
@@ -83,5 +118,18 @@ the workspace state derives those numbers programmatically from `assignments`.
 The `summary` block is reserved for the qualitative judgments (`weak_clusters`,
 `observations`) that you can't reduce to arithmetic.
 
+When you list a cluster in `weak_clusters`, only list it if you actually saw
+enough of its texts to say so. A cluster you assigned one or two texts to isn't
+weak, it's unmeasured — `update-from-audit` will report it as
+`insufficient-sample`, and naming it weak sends an investigator after a
+sampling artefact. Put those in `observations` as under-sampled instead.
+
+The exception is a cluster the stratified draw aimed texts at that you then
+assigned elsewhere. That *is* worth reporting: say which cluster absorbed them
+and why, in `observations`. It's the difference between a cluster nobody
+looked at and one that doesn't hold up, and it's the most useful thing a
+stratified audit produces.
+
 **Return to main session**: Coverage %, mean confidence, which clusters are weak
-and why, what the unclustered texts have in common. 3-5 sentences.
+and why, which clusters drew too few texts to judge, and what the unclustered
+texts have in common. 3-5 sentences. Say which basis you drew on.

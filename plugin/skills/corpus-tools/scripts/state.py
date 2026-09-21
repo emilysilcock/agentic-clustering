@@ -27,9 +27,15 @@ if hasattr(sys.stderr, "reconfigure"):
 from filelock import FileLock
 
 from _audit_metrics import (
+    COVERAGE_SAMPLE_BASIS,
+    MIN_AUDIT_N_PER_CLUSTER,
+    PUBLISHED_WITHHELD_LABEL,
+    audit_power,
     compute_assignment_stats,
     confidence_label,
+    display_label,
     normalize_confidence_scale,
+    sample_basis,
 )
 from _log import append_log
 from _summary import render_summary
@@ -225,6 +231,78 @@ def cmd_count_critique(_args):
     print(f"Critiques: {state['meta']['total_critiques']}")
 
 
+def _load_strata(audit: dict, basis: str, assignments: list[dict]) -> dict[str, list[str]]:
+    """Read the strata manifest a stratified audit was drawn from.
+
+    Returns ``{cluster_id: [text_id]}`` — which texts were *aimed* at which
+    cluster — or ``{}`` when it can't be established. The mapping is what lets
+    `update-from-audit` record ``evidence.audit_targeted`` and so tell
+    "0 assigned of 8 aimed here" from "0 assigned of 0 aimed here".
+
+    Resolution order: the audit's own ``strata_file`` field, then the newest
+    manifest under ``strata/``. Either way the manifest's text ids are checked
+    against the audit's assignments before being trusted: recording targets
+    from the wrong manifest would mark clusters ``unsupported`` that were never
+    actually tested, which is a worse error than not recording them at all.
+    """
+    # A random draw aims at nothing in particular, so it has no strata.
+    if basis == COVERAGE_SAMPLE_BASIS:
+        return {}
+
+    path = None
+    ref = audit.get("strata_file")
+    if ref:
+        candidates = [Path(ref), WORKSPACE / ref]
+        path = next((p for p in candidates if p.exists()), None)
+        if path is None:
+            print(
+                f"Warning: audit references strata_file {ref!r} but it does not "
+                f"exist; falling back to the newest manifest in strata/.",
+                file=sys.stderr,
+            )
+    if path is None:
+        strata_dir = WORKSPACE / "strata"
+        files = sorted(strata_dir.glob("strata_*.json")) if strata_dir.exists() else []
+        if not files:
+            print(
+                "Warning: stratified audit with no strata manifest. Per-cluster "
+                "targets can't be recorded, so a cluster the draw aimed at and "
+                "the auditor rejected will read as merely under-sampled rather "
+                "than unsupported. Have sample.py's manifest path copied into "
+                "the audit's `strata_file` field.",
+                file=sys.stderr,
+            )
+            return {}
+        path = files[-1]
+        if not ref:
+            print(f"Note: using newest strata manifest {path.name}", file=sys.stderr)
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            strata = json.load(f).get("strata", {}) or {}
+    except (OSError, json.JSONDecodeError) as e:
+        print(f"Warning: could not read strata manifest {path}: {e}", file=sys.stderr)
+        return {}
+
+    # Sanity-check the pairing. A manifest for a different draw would have
+    # almost no text ids in common with this audit.
+    manifest_ids = {t for tids in strata.values() for t in tids}
+    audit_ids = {a.get("text_id") for a in assignments if a.get("text_id")}
+    if not manifest_ids or not audit_ids:
+        return {}
+    overlap = len(manifest_ids & audit_ids) / len(audit_ids)
+    if overlap < 0.5:
+        print(
+            f"Warning: strata manifest {path.name} covers only {overlap:.0%} of "
+            f"this audit's texts — it is probably from a different draw. "
+            f"Ignoring it rather than recording targets that would mislabel "
+            f"clusters as unsupported.",
+            file=sys.stderr,
+        )
+        return {}
+    return strata
+
+
 def cmd_update_from_audit(args):
     """Update state with audit results."""
     audit_file = Path(args.file)
@@ -274,60 +352,158 @@ def cmd_update_from_audit(args):
         # disagree with metrics.py or with the per-cluster counts below.
         stats = compute_assignment_stats(assignments)
 
+        # A stratified audit over-draws texts that plausibly belong to each
+        # cluster, so its assignments are the right basis for per-cluster fit
+        # and the wrong one for corpus prevalence. Per-cluster evidence takes
+        # both bases; the headline coverage / mean-confidence figures take
+        # random audits only. See _audit_metrics.SAMPLE_BASES.
+        basis = sample_basis(audit)
+        counts_toward_coverage = basis == COVERAGE_SAMPLE_BASIS
+
+        # Which texts this draw aimed at which cluster (stratified only).
+        strata = _load_strata(audit, basis, assignments)
+        strata_retained = 0
+        strata_aimed = 0
+
         for cluster in state["clusters"]:
             cid = cluster["id"]
+            evidence = cluster.setdefault("evidence", {})
+
+            # Texts aimed at this cluster, accumulated across stratified
+            # audits. This is the denominator that separates "not looked at"
+            # from "looked at and not found".
+            aimed = strata.get(cid)
+            if aimed:
+                evidence["audit_targeted"] = (evidence.get("audit_targeted", 0) or 0) + len(aimed)
+                strata_aimed += len(aimed)
+                own = set(aimed)
+                strata_retained += sum(
+                    1
+                    for a in assignments
+                    if a.get("cluster_id") == cid and a.get("text_id") in own
+                )
+
             slot = stats["per_cluster"].get(cid)
-            if slot is None or not slot["confidences"]:
-                continue
-            confs = slot["confidences"]
-            mean_conf = slot["mean_confidence"]
+            if slot is not None and slot["confidences"]:
+                confs = slot["confidences"]
+                mean_conf = slot["mean_confidence"]
 
-            # Accumulate with existing audit data (running average across audits).
-            existing_count = cluster.get("evidence", {}).get("audit_assignments", 0)
-            existing_mean = cluster.get("evidence", {}).get("audit_mean_confidence")
+                # Accumulate with existing audit data (running average across audits).
+                existing_count = evidence.get("audit_assignments", 0)
+                existing_mean = evidence.get("audit_mean_confidence")
 
-            if existing_mean is not None and existing_count > 0:
-                total_count = existing_count + len(confs)
-                combined_mean = (existing_mean * existing_count + mean_conf * len(confs)) / total_count
-            else:
-                total_count = len(confs)
-                combined_mean = mean_conf
+                if existing_mean is not None and existing_count > 0:
+                    total_count = existing_count + len(confs)
+                    combined_mean = (existing_mean * existing_count + mean_conf * len(confs)) / total_count
+                else:
+                    total_count = len(confs)
+                    combined_mean = mean_conf
 
-            cluster.setdefault("evidence", {})
-            cluster["evidence"]["audit_assignments"] = total_count
-            cluster["evidence"]["audit_mean_confidence"] = round(combined_mean, 2)
-            cluster["evidence"]["total_texts_seen"] = cluster["evidence"].get("total_texts_seen", 0) + len(confs)
+                evidence["audit_assignments"] = total_count
+                evidence["audit_mean_confidence"] = round(combined_mean, 2)
+                evidence["total_texts_seen"] = evidence.get("total_texts_seen", 0) + len(confs)
 
-            cluster["confidence"] = confidence_label(combined_mean)
-            cluster["status"] = "audited"
+            if (slot is not None and slot["confidences"]) or aimed:
+                cluster["status"] = "audited"
+
+            # Recomputed from stored evidence rather than only from this
+            # audit's slice, so a cluster that this draw aimed at and the
+            # auditor rejected moves to `unsupported` even though it gained no
+            # assignments here. Withholds the verdict while the sample is too
+            # thin to support one; the mean is still recorded above.
+            cluster["confidence"] = confidence_label(
+                evidence.get("audit_mean_confidence"),
+                evidence.get("audit_assignments", 0) or 0,
+                evidence.get("audit_targeted", 0) or 0,
+            )
 
         # Global metrics — computed from `assignments`, not from the auditor's
         # LLM-authored summary block.
         current_version = state["meta"]["cluster_version"]
-        state["meta"]["coverage"] = {
-            "value": stats["coverage"],
-            "sample_size": stats["total"],
-            "sample_method": audit.get("sample_method", "random, exclude-seen"),
-            "cluster_version": current_version,
-            "note": "Computed from audit assignments -- not a corpus-wide measurement",
-        }
-        state["meta"]["mean_confidence"] = {
-            "value": stats["mean_confidence"],
-            "sample_size": stats["total"],
-            "sample_method": audit.get("sample_method", "random, exclude-seen"),
-            "cluster_version": current_version,
-        }
+        if counts_toward_coverage:
+            state["meta"]["coverage"] = {
+                "value": stats["coverage"],
+                "sample_size": stats["total"],
+                "sample_method": audit.get("sample_method", "random, exclude-seen"),
+                "sample_basis": basis,
+                "cluster_version": current_version,
+                "note": "Computed from audit assignments -- not a corpus-wide measurement",
+            }
+            state["meta"]["mean_confidence"] = {
+                "value": stats["mean_confidence"],
+                "sample_size": stats["total"],
+                "sample_method": audit.get("sample_method", "random, exclude-seen"),
+                "sample_basis": basis,
+                "cluster_version": current_version,
+            }
 
         state["meta"]["total_audits"] += 1
-        cov_str = f"~{stats['coverage']:.0%}" if stats["total"] else "n/a"
-        mc_str = f"{stats['mean_confidence']:.2f}" if stats["mean_confidence"] is not None else "n/a"
-        state["meta"]["last_action"] = f"audit: coverage {cov_str}, confidence {mc_str}"
+        if counts_toward_coverage:
+            cov_str = f"~{stats['coverage']:.0%}" if stats["total"] else "n/a"
+            mc_str = f"{stats['mean_confidence']:.2f}" if stats["mean_confidence"] is not None else "n/a"
+            state["meta"]["last_action"] = f"audit: coverage {cov_str}, confidence {mc_str}"
+        else:
+            state["meta"]["last_action"] = (
+                f"audit ({basis}): per-cluster evidence for "
+                f"{len(stats['per_cluster'])} clusters; headline coverage unchanged"
+            )
 
         save_state(state)
         generate_summary(state)
-        log_action("update-from-audit", f"Processed {len(assignments)} assignments from {audit_file.name}")
+        log_action(
+            "update-from-audit",
+            f"Processed {len(assignments)} assignments from {audit_file.name} "
+            f"(sample_basis={basis})",
+        )
 
-    print(f"Updated state from audit ({len(assignments)} assignments)")
+        power = audit_power(state["clusters"])
+
+    print(f"Updated state from audit ({len(assignments)} assignments, sample_basis={basis})")
+    if not counts_toward_coverage:
+        print(
+            "  Per-cluster evidence updated; headline coverage and mean confidence "
+            "left as-is (a stratified draw is not a prevalence sample)."
+        )
+    if strata_aimed:
+        print(
+            f"  Stratum retention: {strata_retained}/{strata_aimed} = "
+            f"{strata_retained / strata_aimed:.0%} of aimed texts were assigned "
+            f"to the cluster they were aimed at."
+        )
+
+    def _fmt(rows: list[dict], limit: int = 8) -> str:
+        out = ", ".join(f"{d['id']}(n={d['n']}/aimed {d['targeted']})" for d in rows[:limit])
+        if len(rows) > limit:
+            out += f" +{len(rows) - limit} more"
+        return out
+
+    if power["needs_audit"]:
+        print(
+            f"  {len(power['needs_audit'])}/{power['n_clusters']} clusters are under "
+            f"the n>={power['min_audit_n']} floor and have not been searched for: "
+            f"{_fmt(power['needs_audit'])}"
+        )
+        print(
+            f"  Draw for them: sample.py --strategy stratified --per-cluster "
+            f"{power['min_audit_n']} (~{power['total_needed']} more assignments "
+            f"needed), then audit that draw with \"sample_basis\": \"stratified\" "
+            f"and its strata manifest in `strata_file`."
+        )
+    if power["unsupported"]:
+        print(
+            f"  {len(power['unsupported'])} cluster(s) stayed under the floor "
+            f"*after* being searched for — the draw aimed texts at them and the "
+            f"auditor assigned them elsewhere: {_fmt(power['unsupported'])}"
+        )
+        print(
+            "  Repeating the same draw will not change this. Send an "
+            "investigator to find out where the candidates went: a neighbouring "
+            "cluster absorbing them argues for a merge or a sharper boundary, "
+            "while nothing absorbing them argues the corpus doesn't support the "
+            "cluster. If the descriptions are vague enough that the sampler may "
+            "simply be missing the cluster's texts, --seed-from assigned is "
+            "worth one try first."
+        )
 
 
 def cmd_apply_recommendation(args):
@@ -437,6 +613,16 @@ def _apply_merge(state: dict, rec: dict):
         round(total_audit_conf_sum / total_audit_count, 2) if total_audit_count > 0 else None
     )
     survivor_evidence["total_texts_seen"] = total_texts_seen
+    # Targets accumulate like assignments: texts aimed at any of the merged
+    # clusters were aimed at what is now one cluster.
+    survivor_evidence["audit_targeted"] = (
+        (survivor_evidence.get("audit_targeted", 0) or 0)
+        + sum(
+            (clusters_by_id[rid].get("evidence", {}) or {}).get("audit_targeted", 0) or 0
+            for rid in ids_to_remove
+            if rid in clusters_by_id
+        )
+    )
 
     # Update name/description on the survivor; refresh its confidence label
     # from the newly-merged audit mean.
@@ -444,7 +630,11 @@ def _apply_merge(state: dict, rec: dict):
         survivor["name"] = merge_info["name"]
     if merge_info.get("description"):
         survivor["description"] = merge_info["description"]
-    survivor["confidence"] = confidence_label(survivor_evidence["audit_mean_confidence"])
+    survivor["confidence"] = confidence_label(
+        survivor_evidence["audit_mean_confidence"],
+        total_audit_count,
+        survivor_evidence.get("audit_targeted", 0) or 0,
+    )
     survivor["status"] = "modified"
 
     state["clusters"] = [c for c in state["clusters"] if c["id"] not in ids_to_remove]
@@ -822,6 +1012,66 @@ def cmd_finalize(args):
     with lock:
         state = load_state()
 
+        # Gate. A cluster whose confidence label can't be supported is an
+        # unfinished run, not a publishable result: `insufficient-sample`
+        # has a cheap repair (audit more) and `unsupported` has a real one
+        # (merge, sharpen the boundary, or remove). Refuse rather than export
+        # a taxonomy that has to explain itself.
+        #
+        # Checked here, before anything is written or archived, so a refusal
+        # leaves the workspace exactly as it was and the run can continue.
+        min_audit_n = args.min_audit_n
+        power = audit_power(state["clusters"], min_n=min_audit_n)
+        if min_audit_n and power["below_floor"] and not args.allow_unvalidated:
+            print(
+                f"Refusing to finalize: {len(power['below_floor'])}/"
+                f"{power['n_clusters']} clusters have no confidence label that "
+                f"the audit sample can support (floor: n>={min_audit_n}). "
+                f"Nothing has been written or archived.",
+                file=sys.stderr,
+            )
+            if power["needs_audit"]:
+                print(
+                    f"\n  Under-sampled ({len(power['needs_audit'])}) — the corpus "
+                    f"has not been searched for these. Fix by auditing:",
+                    file=sys.stderr,
+                )
+                for d in power["needs_audit"]:
+                    print(f"    {d['id']} (n={d['n']}): {d['name']}", file=sys.stderr)
+                print(
+                    f"    sample.py --strategy stratified --per-cluster "
+                    f"{min_audit_n}   (~{power['total_needed']} more assignments)\n"
+                    f"    then audit it with \"sample_basis\": \"stratified\" and "
+                    f"its strata manifest in `strata_file`.",
+                    file=sys.stderr,
+                )
+            if power["unsupported"]:
+                print(
+                    f"\n  Unsupported ({len(power['unsupported'])}) — candidates "
+                    f"WERE aimed at these and the auditor assigned them elsewhere, "
+                    f"so auditing again won't help. Fix by changing the taxonomy:",
+                    file=sys.stderr,
+                )
+                for d in power["unsupported"]:
+                    print(
+                        f"    {d['id']} (n={d['n']} of {d['targeted']} aimed): {d['name']}",
+                        file=sys.stderr,
+                    )
+                print(
+                    "    Investigate where the candidates went: a neighbour "
+                    "absorbing them argues for a merge or a sharper boundary; "
+                    "nothing absorbing them argues for removal.",
+                    file=sys.stderr,
+                )
+            print(
+                f"\n  To ship anyway, pass --allow-unvalidated: the clusters above "
+                f"export as '{PUBLISHED_WITHHELD_LABEL}' with their n, and are "
+                f"named at the top of taxonomy.md. Or --min-audit-n 0 to publish "
+                f"every label regardless of sample size.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         # Load corpus for example text enrichment
         corpus_path = WORKSPACE / "corpus.json"
         corpus_lookup = {}
@@ -873,6 +1123,9 @@ def cmd_finalize(args):
             "metrics": {
                 "coverage": state["meta"].get("coverage"),
                 "mean_confidence": state["meta"].get("mean_confidence"),
+                # Says on the artifact's face how much sample each per-cluster
+                # confidence label rests on, so a reader never has to assume.
+                "audit_power": power,
             },
         }
 
@@ -894,11 +1147,22 @@ def cmd_finalize(args):
                     entry["text"] = corpus_lookup[tid]
                 example_texts.append(entry)
 
+            audit_n = evidence.get("audit_assignments", 0) or 0
+            audit_mean = evidence.get("audit_mean_confidence")
+            audit_targeted = evidence.get("audit_targeted", 0) or 0
             output["clusters"].append({
                 "id": c["id"],
                 "name": c["name"],
                 "description": c["description"],
-                "confidence": c.get("confidence", "unaudited"),
+                "confidence": confidence_label(
+                    audit_mean, audit_n, audit_targeted, min_n=min_audit_n
+                ),
+                # Promoted out of `evidence` so the sample the label rests on
+                # sits next to the label itself. The issue this closes was a
+                # `[high]` published off two texts.
+                "audit_n": audit_n,
+                "audit_targeted": audit_targeted,
+                "audit_mean_confidence": audit_mean,
                 "evidence": evidence,
                 "example_texts": example_texts,
             })
@@ -922,13 +1186,39 @@ def cmd_finalize(args):
         if mc and isinstance(mc, dict) and mc.get("value") is not None:
             taxonomy_lines.append(f"**Mean confidence**: {mc['value']:.1f}")
         taxonomy_lines.append(f"**Cluster version**: {state['meta']['cluster_version']}")
+        # One line on the evidence behind the bracketed labels below. Detail
+        # about how the sample was drawn is working state and lives in the
+        # archived summary / final_taxonomy.json, not in the deliverable.
+        if min_audit_n:
+            taxonomy_lines.append(
+                f"**Per-cluster audit sample**: median n={power['median_n']} "
+                f"(minimum {min_audit_n})"
+            )
+            # Only reachable via --allow-unvalidated, i.e. somebody chose to
+            # ship these. Name them once here rather than explaining each one
+            # in place.
+            if power["below_floor"]:
+                ids = ", ".join(d["id"] for d in power["below_floor"])
+                taxonomy_lines.append(
+                    f"**Unvalidated**: {ids} — shipped without a confidence "
+                    f"label their audit sample can support; see "
+                    f"`final_taxonomy.json` → `metrics.audit_power`"
+                )
         taxonomy_lines.append("")
         taxonomy_lines.append("---")
         taxonomy_lines.append("")
 
         for cluster_out in output["clusters"]:
-            conf = cluster_out["confidence"]
-            taxonomy_lines.append(f"## {cluster_out['name']} (`{cluster_out['id']}`) [{conf}]")
+            # The deliverable carries the label and the sample it rests on —
+            # a bare `[high]` gives a reader no way to see whether it stands on
+            # 2 texts or 200 — and nothing else. Which *kind* of thin a
+            # withheld label is routes the discovery loop, not the reader, so
+            # it stays in final_taxonomy.json and the archived summary.
+            conf = display_label(cluster_out["confidence"])
+            taxonomy_lines.append(
+                f"## {cluster_out['name']} (`{cluster_out['id']}`) "
+                f"[{conf}, n={cluster_out['audit_n']}]"
+            )
             taxonomy_lines.append("")
             taxonomy_lines.append(cluster_out["description"])
             taxonomy_lines.append("")
@@ -994,7 +1284,8 @@ def cmd_finalize(args):
 
         # Directories to archive. `critiques/` is included so critic outputs
         # ride along with the other intermediate artifacts.
-        for subdir_name in ["proposals", "audits", "investigations", "critiques", "metrics"]:
+        for subdir_name in ["proposals", "audits", "investigations", "critiques",
+                            "metrics", "strata"]:
             subdir = WORKSPACE / subdir_name
             if subdir.exists():
                 dest = archive_dir / subdir_name
@@ -1042,6 +1333,19 @@ def cmd_finalize(args):
         log_action("finalize", f"Exported {len(output['clusters'])} clusters to {args.output}")
 
     total_examples = sum(len(c.get("example_texts", [])) for c in output["clusters"])
+    if min_audit_n and power["below_floor"]:
+        # Only reachable with --allow-unvalidated, so this is a record of a
+        # waiver rather than a discovery. Keep it short; the detail is in
+        # final_taxonomy.json.
+        print(
+            f"WARNING: shipped {len(power['below_floor'])}/{power['n_clusters']} "
+            f"clusters as '{PUBLISHED_WITHHELD_LABEL}' (--allow-unvalidated): "
+            + ", ".join(f"{d['id']}(n={d['n']})" for d in power["below_floor"])
+            + f". Their labels are not backed by an n>={min_audit_n} sample. "
+            f"Coverage and mean confidence pool every assignment and are "
+            f"unaffected.",
+            file=sys.stderr,
+        )
     print(f"Final taxonomy exported to {args.output}")
     print(f"Human-readable taxonomy: {taxonomy_path}")
     print(f"Categories for text-classification: {categories_path} ({len(categories_out)} entries)")
@@ -1103,6 +1407,31 @@ def main():
             "must be assigned to a real cluster — text-classification's "
             "classify.py infers force-assign semantics from the absence "
             "of a `'none'` id in categories.json."
+        ),
+    )
+    fin.add_argument(
+        "--min-audit-n",
+        type=int,
+        default=MIN_AUDIT_N_PER_CLUSTER,
+        help=(
+            f"Minimum audited texts a cluster needs before its confidence "
+            f"label can be published as high/medium/low (default: "
+            f"{MIN_AUDIT_N_PER_CLUSTER}). Finalize refuses while any cluster "
+            f"is below this; see --allow-unvalidated. Pass 0 to drop the "
+            f"requirement and publish every label regardless of sample size."
+        ),
+    )
+    fin.add_argument(
+        "--allow-unvalidated",
+        action="store_true",
+        help=(
+            f"Finalize even though some clusters' confidence labels aren't "
+            f"backed by an n>=--min-audit-n sample. They export as "
+            f"'{PUBLISHED_WITHHELD_LABEL}' with their n, and are named at the "
+            f"top of taxonomy.md. Use only on an explicit decision to ship a "
+            f"run unresolved — the default refusal exists because a withheld "
+            f"label means the run stopped a step early, and both causes have "
+            f"repairs (audit more; or merge/sharpen/remove)."
         ),
     )
 

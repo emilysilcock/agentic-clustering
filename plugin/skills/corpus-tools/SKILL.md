@@ -49,6 +49,33 @@ so the seed doesn't affect their outcome — but it's still logged for uniform
 provenance. For `diverse`, the seed picks only the starting text; the
 farthest-point traversal is deterministic from there.
 
+The `stratified` strategy reads `--per-cluster` rather than `--n`; `--n`, if
+given, is a total budget that scales each cluster's ask down to fit (so a
+shallow draw covers every short cluster instead of a deep one covering the
+first few). It needs an existing cluster set to stratify by.
+
+It serves only clusters below `--target` (default 5), aiming roughly twice
+each one's shortfall at it — a stratified draw is a hypothesis and the auditor
+reassigns a share of it, so aiming exactly the shortfall undershoots. Clusters
+already at target are skipped, which keeps the cost proportional to the thin
+tail rather than to k; `--all-clusters` overrides that, which is what you want
+after rewriting descriptions. Each call writes a manifest to `strata/`
+recording which texts were aimed at which cluster, and prints its path; an
+audit should carry that path in `strata_file` so `update-from-audit` can tell
+a cluster that was tested and rejected from one that was never sampled.
+
+Candidates are ranked by TF-IDF similarity to each cluster's name and
+description. `--seed-from assigned` ranks by the centroid of the cluster's
+already-assigned texts instead, falling back to the description per cluster.
+It did not beat the default in testing (it needed roughly twice the draws to
+converge on a corpus of deliberately confusable role-pairs, and was
+indistinguishable on a separable one), so it's an option for corpora with
+vague descriptions rather than a recommended setting.
+
+The draw is **not** a prevalence sample — an audit built on it must declare
+`"sample_basis": "stratified"` so the headline coverage figure stays sourced
+from uniform draws.
+
 ```bash
 # Random sample (default: excludes previously seen texts)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py --n 50
@@ -60,6 +87,13 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
 # Diverse (maximally spread across the corpus, via TF-IDF farthest-point)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
   --n 50 --strategy diverse
+
+# Stratified (a per-cluster floor of plausible texts for the clusters that are
+# SHORT, thinnest first — for per-cluster audit power on a large taxonomy).
+# Prints a "Strata manifest: <path>" line; copy it into the audit's
+# `strata_file` field.
+uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
+  --strategy stratified
 
 # Targeted (texts assigned to a specific cluster in recent audits)
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/sample.py \
@@ -104,7 +138,12 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py count-critique
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
   set-clusters <clusters_json_file>
 
-# Update state with audit results (coverage, confidence metrics)
+# Update state with audit results (coverage, confidence metrics). Reads the
+# audit's `sample_basis` field: "random" (or absent) updates the headline
+# coverage / mean confidence and per-cluster evidence; "stratified" updates
+# per-cluster evidence only, since a stratified draw over-represents each
+# cluster's own region and can't estimate coverage. Reports which clusters are
+# still under the per-cluster label floor.
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
   update-from-audit .claude/clustering/audits/<file>.json
 
@@ -116,10 +155,25 @@ uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
   mark-seen <ids...>
 
-# Export final taxonomy (with example texts enrichment)
+# Export final taxonomy (with example texts enrichment). REFUSES, before
+# writing or archiving anything, while any cluster's confidence label rests on
+# fewer than --min-audit-n audit assignments (default 5) — a withheld label
+# means the run stopped a step early, and both causes have repairs (audit
+# more, or merge/sharpen/remove). Fix those and re-run.
+#   --allow-unvalidated  ship anyway; affected clusters export as
+#                        `unvalidated` with their n and are named at the top
+#                        of taxonomy.md. Explicit user decision only.
+#   --min-audit-n 0      drop the requirement entirely.
 uv run $CLAUDE_PLUGIN_ROOT/skills/corpus-tools/scripts/state.py \
   finalize --output .claude/clustering/final_taxonomy.json --max-examples 5
 ```
+
+`taxonomy.md` carries only the label and the sample behind it
+(`[high, n=12]`). The three-way split between `insufficient-sample`,
+`unsupported` and `unaudited` is what routes the discovery loop, so it lives
+in `summary.md`, `metrics.py` output and `update-from-audit` output — plus
+`final_taxonomy.json`, where each cluster keeps its precise `confidence`,
+`audit_n` and `audit_targeted` and `metrics.audit_power` splits the groups.
 
 ## Input Schemas
 

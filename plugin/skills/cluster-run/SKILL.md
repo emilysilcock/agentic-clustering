@@ -313,12 +313,62 @@ in parallel using concurrent Task calls (send multiple Task invocations in one
 message). If they converge, that's signal. If they diverge, get 1-2 more.
 Wider k_range warrants more proposals.
 
-**Audit sample size** — same chars-per-text guidance as proposals
-(200-400 for short texts, 50-150 for medium, 20-50 for long). Floor of ~50
-texts for the coverage % to be meaningful — a 20-text audit gives a ±10
-percentage-point confidence interval on coverage, which is noisier than the
-signal you're trying to read. Seen texts are excluded by default, so audits
-always get fresh texts.
+**Audit sample size** — an audit answers two different questions and they need
+two different draws. Size each separately; don't try to make one sample serve
+both.
+
+*Coverage draw* (`--strategy random`, the default) — how much of the corpus
+the taxonomy covers. Same chars-per-text guidance as proposals (200-400 for
+short texts, 50-150 for medium, 20-50 for long), with a floor of ~50 texts: a
+20-text audit gives a ±10 percentage-point interval on coverage, noisier than
+the signal you're reading. This draw must stay uniform, so never size it by
+cluster count.
+
+*Per-cluster draw* (`--strategy stratified`) — whether
+each individual cluster holds up. The chars-per-text bracket above is about
+what fits an agent's context; it says nothing about how many clusters the
+sample has to cover, and a uniform draw allocates texts in proportion to
+corpus prevalence — exactly backwards, since the rare clusters are the ones
+whose fit is least certain. On a 65-cluster taxonomy a 300-text uniform audit
+averages 4.6 assignments per cluster and leaves the tail on 0-2, which is not
+enough to call a cluster high-confidence or to call it weak.
+
+The floor is **n≥5 per cluster**. Below that, `update-from-audit` withholds
+the verdict and **`finalize` refuses to export at all** — it checks before
+writing or archiving anything, so a refusal costs nothing, but you cannot ship
+a taxonomy whose labels the sample can't support without an explicit user
+decision. Treat clearing the floor as part of the work, not a formality. The
+stratified draw serves only the clusters that are short, so the cost is
+proportional to the thin tail rather than to k, and it shrinks every pass —
+expect the draw to get smaller each time until `sample.py` says there is
+nothing to do. That, plus the **Per-Cluster Audit Sample** section
+disappearing from `summary.md`, is the signal you're done auditing.
+
+The draw ranks candidates by TF-IDF similarity to each cluster's description,
+so it depends on the descriptions being specific. `--seed-from assigned`
+substitutes the cluster's already-assigned texts for its description; it did
+not beat the default in testing, so reach for it only if descriptions are
+vague or boilerplate and clusters are coming back `unsupported` you believe in.
+
+Dispatch the two draws as separate auditors (or one auditor told to write two
+audit files). Each audit file carries `"sample_basis": "random"` or
+`"stratified"`, and only random audits move the headline coverage number. A
+stratified audit must also carry `strata_file` — the manifest path `sample.py`
+prints — or the run loses the ability to tell an untested cluster from a
+rejected one. Seen texts are excluded by default, so every draw gets fresh
+texts.
+
+**The three thin labels mean different things and want different responses:**
+
+| label | means | do |
+|---|---|---|
+| `unaudited` / `insufficient-sample` | too few assignments, and nothing was aimed here | audit again, stratified |
+| `unsupported` | texts *were* aimed here and the auditor put them elsewhere | investigate where they went — merge, sharpen the boundary, or remove |
+| `low` | a real verdict on a sample that met the floor | investigate |
+
+Never send an investigator after `insufficient-sample` — it's chasing a
+sampling artefact. Never send another identical audit after `unsupported` —
+it will come back the same.
 
 ## Iteration Loop
 
@@ -329,16 +379,26 @@ At each step:
 2. Reason about what would be most valuable right now:
    - No proposals yet → **propose** (start with 6-7 proposals in parallel)
    - Have 2+ proposals, no synthesized cluster set → run **cross-proposal metrics**, then dispatch **synthesizer**
-   - Have clusters but no audit → **audit**
-   - Audit shows weak clusters → **investigate** the weak ones
+   - Have clusters but no audit → **audit** (coverage draw first)
+   - Clusters listed as **under-sampled** in `summary.md`'s **Per-Cluster
+     Audit Sample** section → **audit** with `--strategy stratified`. These
+     are unmeasured, not weak; an investigator sent after one is chasing a
+     sampling artefact
+   - Clusters listed as **unsupported** there → **investigate**: candidates
+     were aimed at them and the auditor assigned them elsewhere, so another
+     identical audit returns the same answer
+   - Audit shows weak clusters (a `low` label on a cluster that met the
+     floor) → **investigate** the weak ones
    - Audit shows unclustered patterns → **investigate** unclustered region
    - Haven't critiqued after major changes → **critique**
    - Critic flagged structural issues (overlap, gaps, granularity, boundary
      confusion) with concrete evidence → **investigate** the flagged clusters
    - About to suggest finalize → glance back at the most recent audit's
-     `weak_clusters` and the most recent critique's open issues; if anything
-     concrete remains unaddressed, an Investigator pass is usually cheaper
-     than shipping the issue
+     `weak_clusters`, the most recent critique's open issues, and
+     `summary.md`'s **Per-Cluster Audit Sample** section; if anything concrete
+     remains unaddressed, an Investigator pass is usually cheaper than
+     shipping the issue, and a thin per-cluster sample is cheaper to fix now
+     than to explain in the finalized taxonomy
    - Everything looks solid → suggest **finalizing**
 
 3. **Before dispatching the synthesizer** (when 2+ proposals exist), run
@@ -430,6 +490,8 @@ Agents must write output files to proper subdirectories, never the workspace
 root. The expected layout during a run:
 - `proposals/` — proposer outputs (`prop_*.json`)
 - `audits/` — auditor outputs (`audit_*.json`)
+- `strata/` — stratified-draw manifests (`strata_*.json`), written by
+  `sample.py`, referenced by an audit's `strata_file`
 - `investigations/` — investigator outputs (`inv_*.json`) and synthesizer
   outputs (paired `synthesis_*.json` reasoning + `synthesis_*_clusters.json`
   set-clusters input)
@@ -471,8 +533,18 @@ This preserves all evidence, audit data, and text IDs.
 ## When NOT to Continue
 
 - User says stop → stop
-- All clusters high confidence, coverage > 85%, critic satisfied → suggest finalize
-- Last 2-3 actions improved nothing → suggest finalize (diminishing returns)
+- All clusters high confidence **on a sample that met the n≥5 floor**,
+  coverage > 85%, critic satisfied → suggest finalize. "High confidence" off
+  two texts is not a reason to stop; check `summary.md`'s **Per-Cluster Audit
+  Sample** section before reading the labels as settled
+- Last 2-3 actions improved nothing → suggest finalize (diminishing returns),
+  *unless* what's still missing is per-cluster sample. Clusters below the
+  floor aren't diminishing returns, they're unfinished work, and `finalize`
+  will refuse until they're cleared. Keep going: another stratified pass for
+  the under-sampled ones, an investigator for the unsupported ones. Bring it
+  to the user only if a cluster stays unsupported after an investigator has
+  looked at it — that's a genuine decision (drop it, or ship it unvalidated)
+  and it's theirs
 
 ## When something goes wrong
 
