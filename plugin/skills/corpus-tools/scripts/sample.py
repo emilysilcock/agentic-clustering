@@ -270,6 +270,40 @@ def assigned_text_ids_by_cluster() -> dict[str, list[str]]:
 # capped by --per-cluster.
 RETENTION_MARGIN = 2
 
+# A note on the interaction with --per-cluster, which defaults to the floor
+# (MIN_AUDIT_N_PER_CLUSTER) and therefore CLAMPS this margin for any cluster
+# starting from nothing: a cluster at n=0 has a shortfall equal to the floor,
+# so min(ceiling, 2 x shortfall) collapses to the bare shortfall and the margin
+# does nothing for exactly the clusters furthest behind. That looks like a bug.
+# It was "fixed" on 2026-09-21 by raising the default ceiling, and the fix was
+# reverted the same day after measurement.
+#
+# Swept on both synthetic corpora, every cluster starting at n=0, six draw
+# seeds per cell, 60 cells total (mean passes / mean texts to clear the floor):
+#
+#              role-pair corpus        separable corpus
+#              (retention ~80%)        (retention ~100%)
+#   ceiling    passes   texts          passes   texts
+#   5 (this)   2.50      67.7          1.00     100.0
+#   6          2.83      81.7          1.33     120.7
+#   7          2.83      92.5          1.50     141.0
+#   8          2.50      99.3          1.33     161.0
+#  10          2.50     120.3          1.17     201.3   (1 role-pair run
+#                                                        never cleared)
+#
+# 5 is best-or-tied on passes and strictly cheapest on texts on both corpora,
+# with non-overlapping text ranges. Head to head it beats 7 on 5 of 6 seeds on
+# the role-pair corpus and on 6 of 6 on the separable one, where it also beats
+# every other ceiling 6/6. Raising the ceiling front-loads texts into clusters
+# that would have cleared anyway: at the retention actually observed, the
+# clamped ask gets a from-zero cluster most of the way there, and the pass that
+# finishes it serves only the stragglers and costs 10-15 texts.
+#
+# The trap worth flagging: at a SINGLE seed (100), ceiling 7 beats 5 by a whole
+# pass. It is the only seed of six that does, and it is the one the original
+# change was built on. Re-tuning these constants needs several seeds, because
+# one draw's luck is the same size as the effect being measured.
+
 
 def sample_stratified(
     corpus: list[dict],
