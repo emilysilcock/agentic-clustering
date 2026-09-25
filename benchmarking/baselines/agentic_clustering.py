@@ -621,7 +621,8 @@ The harness takes it from there.
 
 
 def _run_classify(
-    *, workspace_dir: Path, documents_path: Path, allow_none: bool, dataset: str = "?"
+    *, workspace_dir: Path, documents_path: Path, allow_none: bool, dataset: str = "?",
+    usage_out: dict | None = None,
 ) -> Path:
     """Classify the full corpus through the text-classification plugin's
     /classify-run skill, in a headless Claude Code session.
@@ -632,6 +633,12 @@ def _run_classify(
     than user choices — the categories.json `none` policy (reconciled below)
     and the cheap-tier provider/model/mode — and it still reads the output CSV
     itself for metrics and cost.
+
+    ``usage_out``, when given, is populated in place with this session's own
+    Opus usage (same shape as ``_summarize_orchestrator_usage``) so the caller
+    can record it in meta.json. Optional because the ablation runners call this
+    for its CSV alone; leaving it unset only means the figure stays where it
+    always was, in ``classify_session_result.json`` in the workspace.
     """
     load_secrets_into_env()
     required_key = "OPENAI_API_KEY" if CLASSIFY_PROVIDER == "openai" else "ANTHROPIC_API_KEY"
@@ -714,6 +721,22 @@ def _run_classify(
         (workspace_dir / "classify_session_result.json").write_text(
             json.dumps(result_json, indent=2, ensure_ascii=False), encoding="utf-8"
         )
+    if usage_out is not None:
+        session_usage = _summarize_orchestrator_usage(result_json)
+        if session_usage:
+            usage_out.update(session_usage)
+            print(
+                f"[classify/{dataset}] session usage: "
+                f"big_in={session_usage['big_input_tokens']:,} "
+                f"big_out={session_usage['big_output_tokens']:,}",
+                flush=True,
+            )
+        else:
+            print(
+                f"[classify/{dataset}] WARNING: no modelUsage in the /classify-run "
+                f"session result; its Opus tokens will be absent from meta.json.",
+                file=sys.stderr, flush=True,
+            )
     _await_classify_output(
         output_path=output_path,
         log_path=log_path,
@@ -807,6 +830,20 @@ def _await_classify_output(
         f"Log: {log_path}. The batch may still be in flight; check it before "
         f"resubmitting (a duplicate batch is a duplicate bill)."
     )
+
+
+def _plugin_version() -> str | None:
+    """Version string from the plugin manifest the harness is actually running.
+
+    Recorded in meta so a cell can be traced to a plugin release without
+    reading git. Returns None if the manifest is unreadable, which is a
+    provenance gap rather than a run failure.
+    """
+    try:
+        manifest = PLUGIN_ROOT / ".claude-plugin" / "plugin.json"
+        return json.loads(manifest.read_text(encoding="utf-8")).get("version")
+    except Exception:
+        return None
 
 
 def _read_final_taxonomy(workspace_dir: Path) -> dict:
@@ -971,7 +1008,42 @@ def run_agentic_clustering(
             )
         print(f"[agentic/{dataset_name}] resume: skipping corpus build / init / orchestrator")
         _ensure_orchestrator_outputs(workspace_dir)
+        # Recover the original orchestrator's usage from the envelope that run
+        # persisted, rather than reporting the agent loop as unmeasured. A
+        # resume re-runs only classify, so the loop's tokens are just as real as
+        # they were; dropping them would leave the results-table cell reading
+        # "?" for a dataset whose loop we have complete usage for, and would
+        # make a crash-and-resume look cheaper than the same work done in one
+        # pass. wall_clock is NOT recovered -- the elapsed time of a resumed run
+        # genuinely isn't comparable -- so it stays None.
         orch = {"wall_clock_s": None}
+        prior = workspace_dir / "orchestrator_result.json"
+        if prior.exists():
+            try:
+                usage = _summarize_orchestrator_usage(
+                    json.loads(prior.read_text(encoding="utf-8"))
+                )
+            except ValueError:
+                usage = None
+            if usage:
+                orch["usage"] = usage
+                print(
+                    f"[agentic/{dataset_name}] resume: recovered orchestrator usage "
+                    f"from {prior.name} (big_in={usage['big_input_tokens']:,} "
+                    f"big_out={usage['big_output_tokens']:,})"
+                )
+            else:
+                print(
+                    f"[agentic/{dataset_name}] resume: WARNING {prior.name} carries no "
+                    f"modelUsage; big-model tokens will be absent from meta.",
+                    file=sys.stderr,
+                )
+        else:
+            print(
+                f"[agentic/{dataset_name}] resume: WARNING no orchestrator_result.json "
+                f"in the workspace; big-model tokens will be absent from meta.",
+                file=sys.stderr,
+            )
         t_start = time.perf_counter()
     else:
         workspace_dir.mkdir(parents=True, exist_ok=True)
@@ -1016,11 +1088,13 @@ def run_agentic_clustering(
         f"[agentic/{dataset_name}] classifying {len(ds.documents)} docs on {CLASSIFY_MODEL} "
         f"(force_assign={not lens.allow_none})"
     )
+    classify_usage: dict = {}
     classify_csv_path = _run_classify(
         workspace_dir=workspace_dir,
         documents_path=documents_path,
         allow_none=lens.allow_none,
         dataset=dataset_name,
+        usage_out=classify_usage,
     )
     t_end = time.perf_counter()
 
@@ -1096,6 +1170,13 @@ def run_agentic_clustering(
             # stays '?'. Present => build_results_table reads big_input_tokens /
             # big_output_tokens from here.
             **({"orchestrator_usage": orch["usage"]} if orch.get("usage") else {}),
+            # The /classify-run driver session is a second Opus session that the
+            # pre-6dac294 direct classify.py call didn't have. Recorded as its
+            # own block rather than folded into orchestrator_usage, so the two
+            # stay separable; build_results_table decides whether it counts
+            # toward the headline big-model total (it does, by default).
+            **({"classify_session_usage": classify_usage} if classify_usage else {}),
+            "plugin_version": _plugin_version(),
         },
     )
 

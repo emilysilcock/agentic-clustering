@@ -258,14 +258,16 @@ def _huang_he_big_tokens() -> tuple[int, int]:
     return (bi, bo)
 
 
-# Comparable big-model (Opus) token totals for OUR given-k and k±20% runs, in
-# MILLIONS. These are ESTIMATES (midpoint of the range from the 3 datasets whose
-# token runs completed, scaled to 7 via the no-k per-dataset shape --- the full
-# sweep isn't finished). Flagged with a dagger in the table + caption. no-k is
-# measured for all 7 and computed from disk below, so it is NOT listed here.
+# Last-resort big-model (Opus) token totals for OUR given-k and k±20% runs, in
+# MILLIONS: estimates from when only 3 of 7 token runs had completed, kept as a
+# floor so the table renders on a fresh clone. Both configs now have real usage
+# on disk, so these are dead in practice --- ``big_source()`` reports
+# ``estimate`` if either is ever reached again, and the table daggers the cell.
+# Membership of this dict is also what marks a method as "ours, big tier
+# measured in-house", so it stays keyed on both configs even when unused.
 _OURS_BIG_COMPARABLE_M = {
-    "agentic_clustering": 6.0,             # given-k (estimate; 3/7 measured)
-    "agentic_clustering_discoverk": 7.0,   # k±20% (estimate; 3/7 measured)
+    "agentic_clustering": 6.0,             # given-k
+    "agentic_clustering_discoverk": 7.0,   # k±20%
 }
 
 
@@ -291,6 +293,53 @@ _TOKRUN_SUFFIX = {
 }
 
 
+# The /classify-run driver is a second Opus session per dataset (introduced
+# 2026-09-16 in 6dac294; before that the harness called classify.py directly and
+# there was no second session). It is real cost of running the method, so it
+# counts toward the big-model total by default. Flip to False to report the
+# agent loop alone, on the same basis as the published pre-6dac294 figures.
+INCLUDE_CLASSIFY_SESSION_IN_BIG = True
+
+
+def _comparable_big(usage: dict) -> int:
+    """Big-model tokens on the baselines' basis: unique content only, i.e.
+    uncached input + cache creation, excluding cache re-reads."""
+    return int(usage.get("big_input_tokens_no_cache", 0) or 0) + int(
+        usage.get("big_cache_creation_tokens", 0) or 0
+    )
+
+
+def _ours_big_from_runs(method_key: str) -> int | None:
+    """Comparable big-model tokens summed from the RUNS themselves --- each
+    dataset's ``seed=0.meta.json`` --- rather than from the separate token-
+    measurement workspaces.
+
+    Preferred over ``_ours_big_measured`` because it is the configuration that
+    actually produced the accuracy numbers in the same row. The tokrun
+    workspaces were a retrofit: the published main results predate live token
+    capture, so the tokens had to be re-measured separately, pinned to the
+    published 3-proposer config. Any re-run of the main sweep captures its own
+    usage, and then the retrofit is the wrong source --- it would pair fresh
+    accuracy with a different configuration's token count.
+
+    Returns None unless ALL datasets carry ``orchestrator_usage``, so a
+    part-migrated sweep never yields a cell that mixes re-run datasets with
+    stale ones. Same all-or-nothing discipline as ``_ours_big_measured``.
+    """
+    total = 0
+    n = 0
+    for d in DATASETS:
+        m = _load_json(RESULTS / "predictions" / method_key / d.key / "seed=0.meta.json")
+        ou = (m or {}).get("orchestrator_usage") or {}
+        if not ou:
+            continue
+        total += _comparable_big(ou)
+        if INCLUDE_CLASSIFY_SESSION_IN_BIG:
+            total += _comparable_big((m or {}).get("classify_session_usage") or {})
+        n += 1
+    return total if n == len(DATASETS) else None
+
+
 def _ours_big_measured(method_key: str) -> int | None:
     """Measured comparable big-model tokens (input + cacheCreation, excluding
     cache re-reads) summed across the token-measurement workspaces --- but only
@@ -313,6 +362,26 @@ def _ours_big_measured(method_key: str) -> int | None:
     return total if n == len(DATASETS) else None
 
 
+def big_source(method_key: str) -> str:
+    """Which provenance the big-model figure came from: ``"runs"`` (each
+    dataset's own captured usage), ``"tokrun"`` (the retrofitted measurement
+    workspaces), ``"estimate"`` (the hardcoded constant), or ``"n/a"``.
+
+    Drives the estimate dagger, and worth printing when regenerating the table:
+    a silent switch between ``tokrun`` and ``runs`` changes what the number
+    means, since the two were produced under different configurations.
+    """
+    if method_key == "agentic_clustering_nok":
+        return "runs"
+    if method_key not in _OURS_BIG_COMPARABLE_M:
+        return "n/a"
+    if _ours_big_from_runs(method_key) is not None:
+        return "runs"
+    if _ours_big_measured(method_key) is not None:
+        return "tokrun"
+    return "estimate"
+
+
 def token_counts(
     method_key: str,
 ) -> tuple[float | str | None, float | str | None, float | str | None]:
@@ -328,21 +397,29 @@ def token_counts(
       * small (all): real metered batch-API usage on disk.
       * TopicGPT / Huang & He big: tiktoken content tokens (input side).
       * our no-k big: measured (input + cacheCreation summed over 7 datasets).
-      * our given-k / k±20% big: ESTIMATE from ``_OURS_BIG_COMPARABLE_M``.
+      * our given-k / k±20% big: the runs' own captured usage once all 7
+        datasets carry it, else the retrofitted tokrun workspaces, else the
+        ``_OURS_BIG_COMPARABLE_M`` estimate. ``big_source()`` reports which.
     """
     if method_key in _OURS_BIG_COMPARABLE_M:  # given-k, k±20%
         si, so = _ours_small_tokens(method_key)
-        measured = _ours_big_measured(method_key)  # real total once all 7 land
-        big = measured if measured is not None else _OURS_BIG_COMPARABLE_M[method_key] * 1e6
+        # Preference order: the runs' own usage > the retrofitted tokrun
+        # workspaces > the hardcoded estimate. Each step is all-7-or-nothing,
+        # so the cell never blends sources across datasets.
+        big = _ours_big_from_runs(method_key)
+        if big is None:
+            big = _ours_big_measured(method_key)
+        if big is None:
+            big = _OURS_BIG_COMPARABLE_M[method_key] * 1e6
         return (big, si, so)
 
     if method_key == "agentic_clustering_nok":  # no-k: big measured for all 7
         big = 0
         for d in DATASETS:
             m = _load_json(RESULTS / "predictions" / method_key / d.key / "seed=0.meta.json")
-            ou = (m or {}).get("orchestrator_usage") or {}
-            big += int(ou.get("big_input_tokens_no_cache", 0) or 0)
-            big += int(ou.get("big_cache_creation_tokens", 0) or 0)
+            big += _comparable_big((m or {}).get("orchestrator_usage") or {})
+            if INCLUDE_CLASSIFY_SESSION_IN_BIG:
+                big += _comparable_big((m or {}).get("classify_session_usage") or {})
         si, so = _ours_small_tokens(method_key)
         return (big or None, si, so)
 
@@ -447,8 +524,9 @@ def _panel_rows(
             big, small_in, small_out = (token_lookup or {}).get(m.key) or (None, None, None)
             big_str = _fmt_tok(big)
             # Dagger only while the big-model figure is still the estimate --- it
-            # drops automatically once the token sweep completes for this config.
-            is_estimate = m.key in _OURS_BIG_COMPARABLE_M and _ours_big_measured(m.key) is None
+            # drops automatically once either the runs or the token sweep carry
+            # real usage for every dataset in this config.
+            is_estimate = big_source(m.key) == "estimate"
             if is_estimate and big_str not in ("--", "?"):
                 big_str += "$^{\\dagger}$"
             cells.append(big_str)
