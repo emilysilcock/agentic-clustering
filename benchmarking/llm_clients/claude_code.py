@@ -23,6 +23,7 @@ Consumers:
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
@@ -118,6 +119,47 @@ def _accumulate_model_usage(acc: dict, parsed: dict) -> None:
     acc["per_attempt_cost_usd"].append(c)
 
 
+# Env vars that make the `claude` CLI authenticate as a metered API client
+# instead of using the Claude Code subscription login. If any of these is set,
+# the CLI silently prefers it over the claude.ai session -- it prints only a
+# note about connectors being disabled -- and the run bills per token.
+#
+# This bit us on 2026-09-21: _run_classify calls load_secrets_into_env() to get
+# OPENAI_API_KEY, which copies EVERY key in secrets.json into os.environ,
+# including ANTHROPIC_API_KEY. The classify session then died with
+# "Credit balance is too low" (400) because that key has no credit. The
+# dangerous version is the one that does NOT crash: on a multi-dataset sweep
+# os.environ persists, so every dataset after the first would have run on the
+# API key and been billed for real while meta.json still reported the cost as
+# subscription (subscription_usd_basis: claude_code_max_100usd_div_7_datasets).
+#
+# The harness's whole cost model assumes `claude -p` is subscription-funded, so
+# stripping these is what makes the reported numbers true.
+#
+# Caveat for a future config change: anything the CLI session spawns inherits
+# this stripped env, including the detached classify.py. That is fine while the
+# cheap tier is OpenAI (classify.py needs OPENAI_API_KEY, which survives), but a
+# switch back to an Anthropic cheap tier would need its key passed to that child
+# explicitly rather than via the ambient environment.
+_ANTHROPIC_AUTH_ENV = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_BEDROCK_BASE_URL",
+    "ANTHROPIC_VERTEX_BASE_URL",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+)
+
+
+def _subscription_env() -> dict[str, str]:
+    """A copy of os.environ with Anthropic API-auth variables removed."""
+    env = dict(os.environ)
+    for k in _ANTHROPIC_AUTH_ENV:
+        env.pop(k, None)
+    return env
+
+
 def call_claude(
     prompt: str,
     *,
@@ -186,6 +228,7 @@ def call_claude(
                 encoding="utf-8",
                 errors="replace",
                 creationflags=_CREATE_NO_WINDOW,
+                env=_subscription_env(),
             )
         except subprocess.TimeoutExpired as exc:
             print(
@@ -204,6 +247,7 @@ def call_claude(
                     encoding="utf-8",
                     errors="replace",
                     creationflags=_CREATE_NO_WINDOW,
+                    env=_subscription_env(),
                 )
             except subprocess.TimeoutExpired:
                 raise ClaudeCodeError(
