@@ -2,8 +2,7 @@
 
 Why subprocess instead of the Anthropic SDK: the Max plan covers Opus 4.7
 usage under a single monthly subscription. Calls routed through the SDK with
-an API key would bill at metered rates instead. See SPEC §5.6.2 for the
-per-baseline routing decisions.
+an API key would bill at metered rates instead.
 
 Usage-limit handling: the Max plan enforces a rolling 5-hour usage window.
 When hit, `claude -p` exits non-zero and prints a reset time. ``call_claude``
@@ -42,14 +41,35 @@ DEFAULT_MODEL = "claude-opus-4-7"
 DEFAULT_TIMEOUT_S = 180.0
 DEFAULT_MAX_LIMIT_WAITS = 12
 FALLBACK_WAIT_S = 30 * 60
+# A Claude Code session window is ~5h, so a parsed reset further out than this
+# is a misread clock (usually a 12/24-hour mixup) -- prefer the fallback.
+MAX_RESET_H = 6.0
+# A parsed reset already in the past by less than this is taken as "the window
+# just reset, retry now" rather than "the same time tomorrow".
+STALE_RESET_H = 6.0
 WAKE_BUFFER_S = 60
+# Transient connectivity faults get retried with backoff instead of killing the
+# caller. Antivirus HTTPS scanning (e.g. AVG) can intermittently present a
+# self-signed leaf to `claude -p` (DEPTH_ZERO_SELF_SIGNED_CERT); it clears on
+# its own within minutes. Raising immediately would discard a benchmark cell --
+# 1-2h of subscription time -- over a fault a retry moments later survives.
+DEFAULT_MAX_NETWORK_RETRIES = 6
+NETWORK_RETRY_BACKOFF_S = 120
+
+_TRANSIENT_NETWORK_MARKERS = (
+    re.compile(r"DEPTH_ZERO_SELF_SIGNED_CERT", re.IGNORECASE),
+    re.compile(r"SELF_SIGNED_CERT_IN_CHAIN", re.IGNORECASE),
+    re.compile(r"UNABLE_TO_VERIFY_LEAF_SIGNATURE", re.IGNORECASE),
+    re.compile(r"Unable to connect to API", re.IGNORECASE),
+    re.compile(r"ECONNRESET|ETIMEDOUT|ENOTFOUND|EAI_AGAIN", re.IGNORECASE),
+)
 
 _USAGE_LIMIT_MARKERS = (
     re.compile(r"usage limit", re.IGNORECASE),
     # Claude Code CLI prints "You've hit your session limit ... resets HH:MMam
     # (America/New_York)" on the rolling-window cap. Matched verbatim from
-    # observed stderr on 2026-05-22; mismatching this wording previously caused
-    # ~6000 ClusterLLM triplets to burn as fatal errors instead of waiting.
+    # observed stderr; missing this wording makes a limit hit look like a fatal
+    # error instead of a wait.
     re.compile(r"session limit", re.IGNORECASE),
     re.compile(r"5-hour limit", re.IGNORECASE),
     re.compile(r"reached your[^.]*limit", re.IGNORECASE),
@@ -61,8 +81,12 @@ _RESET_ISO = re.compile(
     r"reset[s]?\s+(?:at\s+)?(?P<iso>\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?Z?)",
     re.IGNORECASE,
 )
+# Minutes are optional: the CLI prints a bare hour when the reset lands on one
+# ("You've hit your session limit · resets 4pm (America/New_York)"), which the
+# HH:MM-only form would miss entirely, sending every such 429 to the flat
+# 30-minute FALLBACK_WAIT_S and idling through windows that had already reset.
 _RESET_CLOCK = re.compile(
-    r"reset[s]?\s+(?:at\s+)?(?P<hm>\d{1,2}:\d{2})\s*(?P<ampm>am|pm)?",
+    r"reset[s]?\s+(?:at\s+)?(?P<hm>\d{1,2}(?::\d{2})?)\s*(?P<ampm>am|pm)?",
     re.IGNORECASE,
 )
 _RESET_RELATIVE = re.compile(
@@ -124,11 +148,11 @@ def _accumulate_model_usage(acc: dict, parsed: dict) -> None:
 # the CLI silently prefers it over the claude.ai session -- it prints only a
 # note about connectors being disabled -- and the run bills per token.
 #
-# This bit us on 2026-09-21: _run_classify calls load_secrets_into_env() to get
-# OPENAI_API_KEY, which copies EVERY key in secrets.json into os.environ,
-# including ANTHROPIC_API_KEY. The classify session then died with
-# "Credit balance is too low" (400) because that key has no credit. The
-# dangerous version is the one that does NOT crash: on a multi-dataset sweep
+# _run_classify calls load_secrets_into_env() to get OPENAI_API_KEY, which
+# copies EVERY key in secrets.json into os.environ, including
+# ANTHROPIC_API_KEY. With an unfunded key the classify session dies with
+# "Credit balance is too low" (400). The dangerous version is the one that
+# does NOT crash: on a multi-dataset sweep
 # os.environ persists, so every dataset after the first would have run on the
 # API key and been billed for real while meta.json still reported the cost as
 # subscription (subscription_usd_basis: claude_code_max_100usd_div_7_datasets).
@@ -166,6 +190,7 @@ def call_claude(
     model: str = DEFAULT_MODEL,
     timeout_s: float = DEFAULT_TIMEOUT_S,
     max_limit_waits: int = DEFAULT_MAX_LIMIT_WAITS,
+    max_network_retries: int = DEFAULT_MAX_NETWORK_RETRIES,
     log_prefix: str = "[claude_code]",
     extra_args: list[str] | None = None,
     capture: dict | None = None,
@@ -191,6 +216,7 @@ def call_claude(
     headless session can load the plugin and dispatch Task subagents.
     """
     waits = 0
+    net_retries = 0
     # Windows' CreateProcess caps the full command line at ~32 KB (Unicode
     # API); long prompts trip ``FileNotFoundError: [WinError 206] The
     # filename or extension is too long``. Above 8 KB we pipe the prompt
@@ -333,7 +359,37 @@ def call_claude(
             time.sleep(wait_s)
             continue
 
+        if _looks_like_transient_network(combined):
+            net_retries += 1
+            if net_retries > max_network_retries:
+                raise ClaudeCodeError(
+                    returncode=proc.returncode,
+                    stderr=(
+                        f"transient network error persisted across "
+                        f"{net_retries} retries; giving up.\n{combined}"
+                    ),
+                )
+            print(
+                f"{log_prefix} transient network error "
+                f"(retry {net_retries}/{max_network_retries}); "
+                f"sleeping {NETWORK_RETRY_BACKOFF_S}s. "
+                f"first line: {combined.strip().splitlines()[0][:120] if combined.strip() else '?'}",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(NETWORK_RETRY_BACKOFF_S)
+            continue
+
         raise ClaudeCodeError(returncode=proc.returncode, stderr=combined)
+
+
+def _looks_like_transient_network(text: str) -> bool:
+    """A connectivity fault that typically clears on its own.
+
+    Deliberately narrow: only TLS-trust and socket-level failures, never an
+    API-level refusal or a bad request, which would retry forever.
+    """
+    return any(p.search(text) for p in _TRANSIENT_NETWORK_MARKERS)
 
 
 def _looks_like_usage_limit(text: str) -> bool:
@@ -355,8 +411,16 @@ def _parse_wait_seconds(text: str) -> float:
     m = _RESET_CLOCK.search(text)
     if m:
         try:
-            h, mm = m["hm"].split(":")
-            h, mm = int(h), int(mm)
+            # "9pm" -> hour only; "21:00" / "9:30pm" -> hour and minute.
+            h_str, _, mm_str = m["hm"].partition(":")
+            h, mm = int(h_str), int(mm_str) if mm_str else 0
+            if not 0 <= h <= 23 or not 0 <= mm <= 59:
+                raise ValueError(f"implausible reset clock {m['hm']!r}")
+            # A bare hour with no am/pm is ambiguous on a 12-hour clock, and
+            # guessing wrong wakes up to 12 hours early or late. Only trust it
+            # when it can't be a 12-hour reading (>12) or an am/pm marker says.
+            if not m["ampm"] and not mm_str and h <= 12:
+                raise ValueError(f"ambiguous bare hour {m['hm']!r}; use the fallback")
             if m["ampm"] and m["ampm"].lower() == "pm" and h < 12:
                 h += 12
             if m["ampm"] and m["ampm"].lower() == "am" and h == 12:
@@ -364,8 +428,20 @@ def _parse_wait_seconds(text: str) -> float:
             now = datetime.now()
             t = now.replace(hour=h, minute=mm, second=0, microsecond=0)
             if t <= now:
+                # The CLI prints this at the moment of the 429, so the reset is
+                # imminent -- but we may parse it just after it elapsed (a 429
+                # at 21:02 saying "resets 9pm"). Rolling to tomorrow would then
+                # sleep ~24h instead of seconds, far worse than the fallback.
+                # Only roll forward if it's too stale to be this window's reset.
+                if now - t <= timedelta(hours=STALE_RESET_H):
+                    return 60.0
                 t += timedelta(days=1)
-            return max(60.0, (t - now).total_seconds() + WAKE_BUFFER_S)
+            wait = (t - now).total_seconds() + WAKE_BUFFER_S
+            # A session window is ~5h, so a reset further out than MAX_RESET_H
+            # means we misread the clock (usually a 12/24-hour mixup).
+            if wait > MAX_RESET_H * 3600:
+                raise ValueError(f"reset {m['hm']!r} implies {wait / 3600:.1f}h; not credible")
+            return max(60.0, wait)
         except (ValueError, KeyError):
             pass
 

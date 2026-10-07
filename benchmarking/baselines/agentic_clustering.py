@@ -4,12 +4,12 @@ Drives the plugin's iterative cluster-discovery workflow headlessly across the
 7 processed datasets. For each dataset:
 
   1. Materialise a 512-token-capped copy of the canonical
-     data/derived/<ds>/documents.jsonl (SPEC §5.1.1 / §5.6.3 LLM-input cap —
-     the same cl100k_base truncation the ClusterLLM / Huang & He / TopicGPT
+     data/derived/<ds>/documents.jsonl (LLM-input cap — the same
+     cl100k_base truncation the ClusterLLM / Huang & He / TopicGPT
      dataset_adapters apply) at data/agentic_clustering/<ds>/documents.jsonl,
      then initialise the plugin workspace via init.py pointing at that capped
-     file (no CSV round-trip — init.py reads JSONL natively as of 2026-05-23)
-     with the dataset's lens and fixed k=k_in_scope (SPEC §5.5 headline =
+     file (no CSV round-trip — init.py reads JSONL natively)
+     with the dataset's lens and fixed k=k_in_scope (headline setting =
      given-k). Both the agent loop and the classify step (4) read the capped
      file, so every LLM that sees a document body sees the same ≤512 tokens
      the baselines do.
@@ -22,15 +22,15 @@ Drives the plugin's iterative cluster-discovery workflow headlessly across the
      force-assign from the category set, not a flag).
   4. Classify the full corpus by running the /classify-run skill in a second
      headless ``claude -p`` session — the same path a plugin user takes —
-     on gpt-5-mini in batch mode with prompt caching. Switched from Claude Haiku 4.5 on
-     2026-05-23 because Haiku 4.5's cache threshold is empirically ~4096
+     on gpt-5-mini in batch mode with prompt caching. Not Claude Haiku 4.5
+     because Haiku 4.5's cache threshold is empirically ~4096
      tokens and our smaller-k taxonomies fell below that, causing 0%
      cache hits on three of seven datasets. OpenAI caches automatically
-     at any prompt ≥1024 tokens. See SPEC §5.6.3.
+     at any prompt ≥1024 tokens.
   5. Convert outputs to DocPrediction / TaxonomyEntry records and write
      results/predictions/agentic_clustering/<ds>/seed=<n>.{jsonl,meta.json}.
 
-Cost reporting (SPEC §5.6.3): the agent loop's frontier-tier cost is the
+Cost reporting: the agent loop's frontier-tier cost is the
 literal Claude Code Max subscription, split flat across the 7 datasets in
 the sweep ($14.29 = $100/7 per dataset, recorded as ``subscription_usd``).
 Classify spend is metered and recorded separately as ``api_usd``.
@@ -44,6 +44,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 # Defensive: classify.py output rows include a "reasoning" cell which is
@@ -68,13 +69,13 @@ from benchmarking.secrets import load_secrets_into_env
 
 METHOD = "agentic_clustering"
 
-# SPEC §5.6.1: Opus 4.7 for the agent loop, GPT-5-mini for bulk per-doc.
-# (Switched the cheap tier from Claude Haiku 4.5 → gpt-5-mini on 2026-05-23:
+# Opus 4.7 for the agent loop, GPT-5-mini for bulk per-doc.
+# (The cheap tier is gpt-5-mini rather than Claude Haiku 4.5 because
 # Haiku 4.5's empirical cache minimum is ~4096 tokens, so three of our seven
 # datasets — 20NG, MASSIVE-Intent, MASSIVE-Domain — had small-k classification
 # prompts that didn't cache; gpt-5-mini caches automatically at any prompt
 # size ≥1024 tokens, and the A/B test on Banking77 was within noise on
-# quality. See SPEC §5.6.3.)
+# quality.)
 ORCHESTRATOR_MODEL = "claude-opus-4-7"
 CLASSIFY_MODEL = "gpt-5-mini"
 CLASSIFY_PROVIDER = "openai"
@@ -107,7 +108,7 @@ INIT_SCRIPT = SCRIPTS_DIR / "init.py"
 # detached, so a multi-hour batch poll outlives both the session's Bash
 # per-call timeout and the session itself.
 REPO_ROOT = PLUGIN_ROOT.parent
-LAUNCH_DETACHED_SCRIPT = REPO_ROOT / "scripts" / "launch_detached.py"
+LAUNCH_DETACHED_SCRIPT = REPO_ROOT / "benchmarking" / "launch_detached.py"
 
 
 def _venv_python() -> Path:
@@ -136,12 +137,13 @@ CLASSIFY_SCRIPT = TEXT_CLASSIFICATION_ROOT / "skills" / "classify-tools" / "scri
 # the shipped plugin's own control flow, so the orchestrator stops on the
 # state-grounded criteria in cluster-run/SKILL.md ("When NOT to Continue":
 # critic satisfied + coverage >85%, or diminishing returns) and nothing else.
-# Earlier revisions imposed a cumulative cap (8 until 2026-06-05, then 20),
+# Earlier revisions imposed a cumulative cap (first 8, then 20),
 # mirroring the SKILL.md hard checkpoint that issue #2 removed; the cap went
 # with it, since a benchmark-only stopping rule measures the harness rather
-# than the method. Results published before 2026-09-16 were produced at 20.
+# than the method. Results published before the cap was removed were produced
+# at 20.
 
-# SPEC §5.1.1 / §5.6.3: every method that feeds a document body to an LLM caps
+# Every method that feeds a document body to an LLM caps
 # it at 512 tiktoken cl100k_base tokens. The ClusterLLM / Huang & He / TopicGPT
 # baselines apply this in their dataset_adapters; we mirror it here so the agent
 # loop (Proposer/Synthesizer/Auditor/Critic/Investigator) and the gpt-5-mini
@@ -196,8 +198,8 @@ def _materialize_capped_corpus(dataset_name: str, ds, *, force: bool = False) ->
 
 
 def _uv_env() -> dict[str, str]:
-    """uv on Windows fails to TLS-verify unless SSL_CERT_FILE is unset (see
-    feedback_uv_tls_workaround). Inherit the parent env, drop that var, and
+    """uv on some Windows setups fails to TLS-verify unless SSL_CERT_FILE is
+    unset. Inherit the parent env, drop that var, and
     let --native-tls do the verification.
     """
     env = os.environ.copy()
@@ -216,8 +218,7 @@ def _init_workspace(
     *, workspace_dir: Path, documents_path: Path, k_min: int, k_max: int, lens_text: str
 ) -> None:
     """Point init.py at the canonical documents.jsonl directly — no CSV
-    round-trip. Requires init.py to accept --id-col and .jsonl input (added
-    on 2026-05-23 alongside dropping _build_corpus_csv)."""
+    round-trip. Requires init.py to accept --id-col and .jsonl input."""
     workspace_dir.mkdir(parents=True, exist_ok=True)
     _run_uv_script(
         INIT_SCRIPT,
@@ -347,7 +348,7 @@ def _summarize_orchestrator_usage(result_json: dict) -> dict | None:
     ``modelUsage`` and ``total_cost_usd`` are session-wide totals that include
     every Task sub-agent (proposer / synthesizer / auditor / investigator /
     critic), not just the orchestrator's own turns --- verified empirically
-    2026-07-12 (a sub-agent-dispatching run reports ~3x the tokens and cost of
+    (a sub-agent-dispatching run reports ~3x the tokens and cost of
     the same task done inline, and ``total_cost_usd`` equals the summed
     ``modelUsage`` cost). The top-level ``usage`` block is main-loop only and is
     deliberately ignored. Returns None when the result carries no ``modelUsage``,
@@ -459,7 +460,105 @@ def _run_orchestrator(
     return {"wall_clock_s": t1 - t0, "stdout": stdout, "usage": usage}
 
 
-def _ensure_orchestrator_outputs(workspace_dir: Path) -> None:
+# How many times to dispatch the orchestrator for one dataset before giving
+# up. Each attempt is a fresh session over the same workspace. Kept small: if
+# three consecutive sessions end their turn early, the problem is the prompt or
+# the dataset, not luck, and burning more subscription window will not fix it.
+MAX_ORCHESTRATOR_ATTEMPTS = 3
+
+# Slack when deciding whether an output file predates this run (see
+# _ensure_orchestrator_outputs).
+MTIME_TOLERANCE_S = 5.0
+
+
+def _merge_orchestrator_attempts(prev: dict | None, new: dict) -> dict:
+    """Fold a re-dispatch into the running totals for this dataset.
+
+    Wall clock adds up; usage is summed field by field so the final meta
+    reflects every attempt. Mirrors what call_claude already does across
+    usage-limit retries, for the same reason: dropping the failed attempts
+    would make a dataset that needed three tries look as cheap as one that
+    needed one.
+    """
+    if prev is None:
+        return dict(new)
+    merged = dict(new)
+    merged["wall_clock_s"] = (prev.get("wall_clock_s") or 0) + (new.get("wall_clock_s") or 0)
+    pu, nu = prev.get("usage"), new.get("usage")
+    if pu and nu:
+        summed = dict(nu)
+        for k in ("big_input_tokens", "big_input_tokens_no_cache", "big_cache_read_tokens",
+                  "big_cache_creation_tokens", "big_output_tokens"):
+            summed[k] = (pu.get(k) or 0) + (nu.get(k) or 0)
+        for k in ("total_cost_usd", "num_turns"):
+            if pu.get(k) is not None or nu.get(k) is not None:
+                summed[k] = (pu.get(k) or 0) + (nu.get(k) or 0)
+        summed["orchestrator_attempts"] = (pu.get("orchestrator_attempts") or 1) + 1
+        merged["usage"] = summed
+    elif pu and not nu:
+        merged["usage"] = pu
+    return merged
+
+
+def dispatch_orchestrator_with_retry(dispatch, *, workspace_dir: Path, label: str) -> dict:
+    """Run an orchestrator dispatch, re-dispatching if it returns unfinalized.
+
+    ``dispatch`` is a zero-argument callable returning the usual orch dict; it
+    is called again from scratch on each attempt. Shared by the main runner and
+    the ablations, which have their own prompts and dispatch functions but the
+    identical failure mode: the headless session says it is "waiting" for a
+    sub-agent and ends its turn, leaving the workspace without outputs.
+
+    Outputs must be newer than the moment of dispatch, so a previous run's
+    leftovers cannot satisfy an attempt that produced nothing.
+    """
+    attempts = 0
+    orch = None
+    while True:
+        attempts += 1
+        dispatched_at = time.time()
+        if attempts > 1:
+            print(f"[{label}] re-dispatching orchestrator "
+                  f"(attempt {attempts}/{MAX_ORCHESTRATOR_ATTEMPTS})", flush=True)
+        attempt = dispatch()
+        orch = _merge_orchestrator_attempts(orch, attempt)
+        try:
+            _ensure_orchestrator_outputs(workspace_dir, newer_than=dispatched_at)
+            return orch
+        except OrchestratorIncomplete as exc:
+            if attempts >= MAX_ORCHESTRATOR_ATTEMPTS:
+                raise OrchestratorIncomplete(f"{exc} Gave up after {attempts} attempts.") from None
+            print(f"[{label}] INCOMPLETE: {exc} Re-dispatching "
+                  f"({attempts}/{MAX_ORCHESTRATOR_ATTEMPTS} used).",
+                  file=sys.stderr, flush=True)
+
+
+class OrchestratorIncomplete(RuntimeError):
+    """The orchestrator returned without finalizing.
+
+    Its own exception type because it is retryable: the headless session ends
+    its turn early (typically saying it is "waiting" for a sub-agent, when the
+    Task tool is synchronous), which loses the loop's work but leaves the
+    workspace fine to run again. Distinct from a RuntimeError raised by a
+    genuine harness bug, which should not be retried.
+    """
+
+
+def _ensure_orchestrator_outputs(workspace_dir: Path, *, newer_than: float | None = None) -> None:
+    """Check cluster-finalize actually wrote this run's outputs.
+
+    ``newer_than`` is a wall-clock timestamp (time.time()) taken before the
+    orchestrator was dispatched. A file older than that predates this run and
+    does NOT count, no matter that it exists.
+
+    Without the freshness test the check is satisfiable by leftovers. init.py
+    does not clear the workspace, so a re-run of a dataset that was clustered
+    months ago starts with an old final_taxonomy.json and taxonomy.md already
+    in place. A run that ends its turn after dispatching the synthesizer -- 0
+    clusters in state -- would otherwise pass on a stale final_taxonomy.json
+    and categories.json and go on to classify the corpus against an old
+    taxonomy. Existence is not evidence that this run produced anything.
+    """
     # cluster-finalize writes all three. classification/prompt.md is gone
     # since commit 36861bb dissolved build_classification_prompt.py;
     # categories.json is the new canonical handoff to /classify-run.
@@ -469,9 +568,31 @@ def _ensure_orchestrator_outputs(workspace_dir: Path) -> None:
         workspace_dir / "categories.json",
     ]
     missing = [p for p in required if not p.exists()]
-    if missing:
-        raise RuntimeError(
-            f"orchestrator finished but expected outputs missing: {missing}. "
+    stale = []
+    if newer_than is not None:
+        # Tolerance for clock/filesystem granularity: time.time() and st_mtime
+        # are not guaranteed to agree to the microsecond, so a file written
+        # immediately after dispatch can appear fractionally older than it. A
+        # real orchestrator run is tens of minutes, so seconds of slack cannot
+        # let a genuinely stale file through -- the leftovers this guards
+        # against are months old -- while removing a false "stale" verdict that
+        # would kill a perfectly good run.
+        cutoff = newer_than - MTIME_TOLERANCE_S
+        stale = [
+            p for p in required
+            if p not in missing and p.stat().st_mtime < cutoff
+        ]
+    if missing or stale:
+        detail = ""
+        if missing:
+            detail += f" missing: {[p.name for p in missing]}"
+        if stale:
+            detail += (
+                f" stale (predate this run): "
+                f"{[(p.name, datetime.fromtimestamp(p.stat().st_mtime).strftime('%Y-%m-%d')) for p in stale]}"
+            )
+        raise OrchestratorIncomplete(
+            f"orchestrator finished without finalizing.{detail}. "
             f"Inspect {workspace_dir}/ to diagnose."
         )
 
@@ -525,7 +646,7 @@ def _classify_prompt(
     is, which corpus, which provider, which execution mode. There is no user
     here, so we answer all four up front and let the skill do the rest (prompt
     assembly, caching, structured outputs, the report).
-    Provider / model / mode are the SPEC §5.6.1 cheap tier, the same values the
+    Provider / model / mode are the cheap tier, the same values the
     harness used to pass to classify.py itself.
 
     The one deviation from the skill's step 4 is *how* the command is started.
@@ -685,9 +806,9 @@ def _run_classify(
     # pointer-file lookup, so setting it here keeps the session off the
     # .claude/clustering/.active_workspace path entirely.
     os.environ["CLASSIFY_WORKSPACE"] = str(workspace_dir)
-    # The skill's documented command is a plain `uv run`, but uv on this machine
-    # can't TLS-verify with SSL_CERT_FILE set (see _uv_env / the uv TLS
-    # workaround). The harness's own calls pass --native-tls explicitly; we
+    # The skill's documented command is a plain `uv run`, but on some Windows
+    # setups uv can't TLS-verify with SSL_CERT_FILE set (see _uv_env). The
+    # harness's own calls pass --native-tls explicitly; we
     # can't edit the skill's command, so set the environment equivalents here
     # and let the skill's command work unmodified.
     os.environ.pop("SSL_CERT_FILE", None)
@@ -818,8 +939,7 @@ def _await_classify_output(
                     f"{output_path}.\nLog: {log_path}\nSession transcript: "
                     f"{session_stdout_path}\nIf the log shows a submitted batch id, "
                     f"the batch is still billable and collectable — "
-                    f"scripts/recover_orphan_batches.py can pick it up rather than "
-                    f"resubmitting."
+                    f"retrieve its output rather than resubmitting."
                 )
         else:
             grace_checks = 3
@@ -936,9 +1056,9 @@ METHOD_DISCOVER_K = "agentic_clustering_discoverk"
 # a published number means asking for that configuration explicitly; nothing
 # here is a default, and none of it changes the plugin.
 #
-#   main      given-k + discover-k seed=0, 2026-05-22/23
-#   notask    Ablation 2 (blank instructions), 2026-05-25
-#   nok       Ablation 3 (k anchor removed), 2026-07-12
+#   main      given-k + discover-k seed=0
+#   notask    Ablation 2 (blank instructions)
+#   nok       Ablation 3 (k anchor removed)
 #   synthonly Ablation 1 runs no orchestrator at all — it re-classifies the
 #             archived first-synth taxonomy — so neither knob applies.
 PAPER_CONFIG: dict[str, dict[str, int]] = {
@@ -985,7 +1105,7 @@ def run_agentic_clustering(
     k_in_scope = int(ds.meta["k_in_scope"])
     # Feed init.py + classify.py the 512-token-capped corpus, not the canonical
     # one, so the agent loop and per-doc classification see the same truncated
-    # bodies as the baselines (SPEC §5.1.1 / §5.6.3).
+    # bodies as the baselines.
     documents_path = _materialize_capped_corpus(dataset_name, ds)
 
     if discover_k:
@@ -1058,19 +1178,33 @@ def run_agentic_clustering(
         )
 
         t_start = time.perf_counter()
+        # Re-dispatch when the session ends its turn without finalizing. The
+        # headless orchestrator occasionally says it is "waiting" for a
+        # sub-agent and stops, even though the Task tool is synchronous and the
+        # prompt forbids it -- observed on the two largest-k discover-k runs,
+        # which produced nothing after 13 and 23 minutes. The loop's
+        # partial work is not recoverable (outputs are only written at
+        # finalize), but the workspace is fine to re-run, so the alternative to
+        # retrying is a dead sweep and a manual restart.
+        #
+        # Usage is summed across attempts, exactly as call_claude does for
+        # usage-limit retries, so a retried dataset's token count reflects
+        # everything spent producing it rather than only the successful attempt.
         print(f"[agentic/{dataset_name}] dispatching orchestrator on {ORCHESTRATOR_MODEL}")
-        orch = _run_orchestrator(
+        orch = dispatch_orchestrator_with_retry(
+            lambda: _run_orchestrator(
+                workspace_dir=workspace_dir,
+                dataset=dataset_name,
+                k_min=k_min,
+                k_max=k_max,
+                allow_none=lens.allow_none,
+                initial_proposers=initial_proposers,
+                max_agent_dispatches=max_agent_dispatches,
+            ),
             workspace_dir=workspace_dir,
-            dataset=dataset_name,
-            k_min=k_min,
-            k_max=k_max,
-            allow_none=lens.allow_none,
-            initial_proposers=initial_proposers,
-            max_agent_dispatches=max_agent_dispatches,
+            label=f"agentic/{dataset_name}",
         )
         print(f"[agentic/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
-
-        _ensure_orchestrator_outputs(workspace_dir)
 
         if skip_classify:
             print(f"[agentic/{dataset_name}] --skip-classify; stopping before classify step.")

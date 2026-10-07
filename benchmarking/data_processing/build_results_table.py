@@ -8,7 +8,7 @@ The table has two panels:
 * **Given $k$** --- methods that take the gold class count as input.
 * **Discover $k$** --- methods that decide $k$ themselves. BERTopic and our
   method appear in both (with separate runs); TopicGPT only here, since it
-  has no native given-$k$ mode (SPEC \xa75.5).
+  has no native given-$k$ mode.
 
 Best-cell underlining is computed *within each panel* so the highlight is
 comparing like with like.
@@ -23,7 +23,6 @@ Writes to `paper/results_table.tex`.
 from __future__ import annotations
 
 import json
-import statistics
 from dataclasses import dataclass
 from functools import lru_cache
 
@@ -78,29 +77,34 @@ DATASETS: list[DatasetDisplay] = [
 METRICS = ("ari", "nmi", "acc")
 
 
+# Every cell in the table is reported from this seed alone. Metrics used to be
+# averaged over whatever `seed=*.meta.json` files happened to be present, which
+# was wrong in two ways. It was inconsistent: k-hat, cost and both token columns
+# have always read seed=0 explicitly, so a multi-seed cell reported averaged
+# accuracy beside single-seed k-hat and cost. And it silently mixed plugin
+# versions -- the k±20% cells averaged a seed=0 run with a seed=1 run from a
+# later sweep on a different plugin version, so the number described no
+# configuration that was ever actually run.
+#
+# Multi-seed analysis is a real thing to want, but it belongs in a dedicated
+# table where the seed count is stated, not folded invisibly into the main
+# results. Additional seeds on disk are ignored here, not deleted.
+REPORT_SEED = 0
+
+
 def load_metrics(method_key: str, dataset_key: str) -> dict | None:
-    """Metrics for this (method, dataset), averaged across seeds if more than one.
+    """Metrics for this (method, dataset), from REPORT_SEED only.
 
-    Returns None when no meta.json exists, so the caller can render a missing cell.
+    Returns None when that seed's meta.json is absent, so the caller can render
+    a missing cell.
     """
-    cell_dir = RESULTS / "predictions" / method_key / dataset_key
-    if not cell_dir.exists():
+    path = RESULTS / "predictions" / method_key / dataset_key / f"seed={REPORT_SEED}.meta.json"
+    if not path.exists():
         return None
-    meta_files = sorted(cell_dir.glob("seed=*.meta.json"))
-    if not meta_files:
-        return None
-
-    collected: dict[str, list[float]] = {name: [] for name in METRICS}
-    for path in meta_files:
-        with open(path, encoding="utf-8") as fp:
-            data = json.load(fp)
-        m = data.get("metrics", {})
-        for name in METRICS:
-            v = m.get(name)
-            if v is not None:
-                collected[name].append(float(v))
-
-    return {name: (statistics.mean(vs) if vs else None) for name, vs in collected.items()}
+    with open(path, encoding="utf-8") as fp:
+        m = json.load(fp).get("metrics", {})
+    out = {name: (float(m[name]) if m.get(name) is not None else None) for name in METRICS}
+    return out if any(v is not None for v in out.values()) else None
 
 
 @lru_cache(maxsize=None)
@@ -116,7 +120,7 @@ def gold_k(dataset_key: str) -> int | None:
 def predicted_k(method_key: str, dataset_key: str) -> int | None:
     """Reported $\\hat{k}$ for one (method, dataset) cell: populated clusters only.
 
-    Per SPEC §5.5 (decided 2026-05-25), $\\hat{k}$ is the number of clusters with
+    $\\hat{k}$ is the number of clusters with
     **at least one document assigned**, counted from the predictions JSONL —
     *not* the size of the generated taxonomy. Empty taxonomy entries that no
     document is classified into are not counted. This is applied consistently
@@ -294,7 +298,7 @@ _TOKRUN_SUFFIX = {
 
 
 # The /classify-run driver is a second Opus session per dataset (introduced
-# 2026-09-16 in 6dac294; before that the harness called classify.py directly and
+# in 6dac294; before that the harness called classify.py directly and
 # there was no second session). It is real cost of running the method, so it
 # counts toward the big-model total by default. Flip to False to report the
 # agent loop alone, on the same basis as the published pre-6dac294 figures.
@@ -697,11 +701,14 @@ def build_table() -> str:
         "\\textwidth}{!}{\\usebox{\\acdecktwo}}"
     )
     lines.extend([
-        "  \\caption{Clustering results across seven benchmarks. Cost is the "
+        "  \\caption{Clustering results across seven benchmarks. Underlined "
+        "values are the best in each column within the given-$k$ and "
+        "discover-$k$ blocks. $\\hat{k}$ is the number of clusters produced. "
+        "Cost is the "
         "total USD across all seven datasets; methods that use the Claude Code "
         "Max subscription show it as the flat \\$100 subscription plus metered "
         "API spend (\\$100 + API). The token columns report frontier-tier "
-        "(Claude Opus 4.7) and cheap-tier (\\texttt{gpt-5-mini}) usage in "
+        "(Claude Opus 4.7) and cheap-tier (GPT-5-mini) usage in "
         "millions, summed across the seven datasets; see \\S\\ref{sec:results} "
         "for the accounting.}",
         "  \\label{tab:results}",

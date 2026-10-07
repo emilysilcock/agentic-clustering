@@ -7,12 +7,11 @@ Batch API poll runs for minutes to hours, so it needs to outlive both. This
 launcher spawns the command in its own process group / with DETACHED_PROCESS,
 so it survives the session, and exits immediately so no tool call blocks.
 
-Generalises ``launch_tokrun_detached.py`` (which hardcodes one command) to an
-arbitrary argv. Windowless per the project's no-console rule.
+Takes an arbitrary argv. On Windows the child is also windowless.
 
 Usage (note the ``--`` separator; everything after it is the command):
 
-    python scripts/launch_detached.py --log logs/classify.log -- \\
+    python benchmarking/launch_detached.py --log logs/classify.log -- \\
         uv run /path/to/classify.py --input ... --output ...
 
 Prints ``pid=<n> log=<path>`` on success. The caller polls the command's real
@@ -62,7 +61,7 @@ def main() -> int:
     if not cmd:
         print(
             "no command given; put it after a `--` separator, e.g.\n"
-            "  python scripts/launch_detached.py --log x.log -- uv run script.py",
+            "  python benchmarking/launch_detached.py --log x.log -- uv run script.py",
             file=sys.stderr,
         )
         return 2

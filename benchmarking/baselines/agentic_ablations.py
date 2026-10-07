@@ -7,7 +7,7 @@ the already-completed main runs (``agentic_clustering`` /
 ``agentic_clustering_discoverk`` predictions, ``seed=0`` / ``seed=0_discoverk``
 workspaces) are never touched or re-executed.
 
-Per the 2026-05-25 ablation decision, both run from the **discover-k** config.
+Both run from the **discover-k** config.
 
 Ablation 1 — synth-only ("no auditor / critic / investigator"):
     Take the *first* taxonomy the synthesizer produced (recovered from the
@@ -20,17 +20,16 @@ Ablation 1 — synth-only ("no auditor / critic / investigator"):
       source:    clustering/<ds>/seed=<n>_discoverk/             (READ-ONLY)
 
     The first-synthesis file for each of the 7 datasets is hardcoded in
-    FIRST_SYNTH_DISCOVERK below. Each was verified (2026-05-25) against the
+    FIRST_SYNTH_DISCOVERK below. Each was verified against the
     run's archive/log.jsonl: its cluster count equals the first
     `set-clusters (version 1)` commit and it was written just before that
     commit — so it is the synthesizer's first output, not a single proposer's
-    and not a later re-synthesis. (goemotions saved it under the non-obvious
-    name cluster_set_tmp.json.)
+    and not a later re-synthesis.
 
 Ablation 2 — no-task ("blank user instructions"):
     A full end-to-end discover-k run with ``config.instructions = ""`` (the
-    plugin's documented "discover from data alone" mode, cluster-run/SKILL.md
-    L117-118) and the dataset identity stripped from the harness driver prompt.
+    plugin's documented "discover from data alone" mode, cluster-run/SKILL.md)
+    and the dataset identity stripped from the harness driver prompt.
     Everything else (allow_none, the +-20% k-range) is held identical to the
     main discover-k run, so the only changed variable is the task description.
       method:    agentic_clustering_notask_discoverk
@@ -71,12 +70,12 @@ from pathlib import Path
 # Read-only imports of the production helpers. This module never edits
 # agentic_clustering.py; it only calls into it.
 #
-# NOTE: BUILD_PROMPT_SCRIPT is intentionally NOT imported at module load. The
-# classification split (PLAN.md housekeeping) removed it from agentic_clustering
-# in favour of the categories.json handoff, so a top-level import would break the
-# whole module — including the no-task and no-k ablations, which don't use it. It
-# is lazy-imported inside run_synthonly (ablation 1) instead, so its pending
-# catch-up stays localized to that one path.
+# NOTE: BUILD_PROMPT_SCRIPT is gone, not deferred. The classification split
+# (commit 36861bb) dissolved build_classification_prompt.py in favour of the
+# categories.json handoff. run_synthonly used to lazy-import the constant so the
+# breakage stayed off the no-task / no-k paths, but a lazy import of a name that
+# no longer exists is still an ImportError the moment ablation 1 runs. So
+# run_synthonly now writes categories.json itself.
 from benchmarking.baselines.agentic_clustering import (
     CLASSIFY_MODEL,
     DISCOVER_K_FRACTION,
@@ -89,13 +88,13 @@ from benchmarking.baselines.agentic_clustering import (
     _build_taxonomy_entries,
     _classify_cost_usd,
     _ensure_orchestrator_outputs,
+    dispatch_orchestrator_with_retry,
     _init_workspace,
     _materialize_capped_corpus,
     _orchestrator_prompt,
     _read_classify_csv,
     _read_final_taxonomy,
     _run_classify,
-    _run_uv_script,
     _summarize_orchestrator_usage,
     _taxonomy_str_to_int_id,
 )
@@ -128,18 +127,62 @@ SWEEP_ORDER = [
 # --------------------------------------------------------------------------- #
 
 # Verified first-synthesis taxonomy per discover-k workspace, hardcoded after
-# confirming each against archive/log.jsonl (see module docstring). Value is
+# confirming each against the run's log.jsonl (see module docstring). Value is
 # (path relative to seed=0_discoverk/, expected version-1 cluster count). The
 # count is re-checked at run time in run_synthonly and aborts loudly on any
 # mismatch, so a moved/regenerated workspace can't silently yield a wrong file.
+#
+# Derived for the v0.1.7 runs. An earlier version of this table pointed into
+# the v0.1.6 workspaces, which re-clustering each dataset with v0.1.7 replaced,
+# so those entries no longer resolve. Nothing below is inferred from a filename: each pick had to satisfy all of
+#
+#   * the run's first `set-clusters` commit reads "<N> clusters set (version 1)";
+#   * the file loads through _load_synth_clusters at exactly N clusters;
+#   * it lives in investigations/ (synthesizer output), not proposals/;
+#   * it was written seconds-to-minutes BEFORE that commit;
+#   * its metadata sidecar records clusters_produced=N over 6-7 merged
+#     proposals (the shipped proposer default);
+#   * it is not inside a stale_/prerun_ dir belonging to a discarded attempt.
+#
+# Cross-check tying these workspaces to the published `Full (discover-k)`
+# column: all seven report plugin_version 0.1.7, and each workspace's
+# final_taxonomy.json count equals its prediction's k_actual.
+#
+# Two cases needed a judgement call rather than just the checks:
+#
+#   massive_intent  has TWO version-1 commits, because the workspace was
+#       re-initialised mid-run at 15:23:55Z (archive/stale_pre_reinit_*). The
+#       first (67 clusters, 15:00:29Z) belongs to the discarded attempt; the
+#       surviving run's version 1 is the 66-cluster commit at 16:00:07Z, and
+#       the pick's six merged proposals are all stamped 20260926T1530 — i.e.
+#       created after the re-init, none of them in the stale dir.
+#   clinc150  has an earlier synthesis in the same run
+#       (synthesis_r1_clusters.json, 243 clusters, 01:29:19Z) that is NOT the
+#       pick. It overshot the target range [120,180], carries no metadata
+#       sidecar, was never committed to state, and fails the count criterion
+#       (243 != 151). It reads as a working intermediate that was refined to
+#       151 before anything reached version 1. The committed version-1
+#       taxonomy is the pre-audit/critic/investigator boundary this ablation
+#       is defined against, so synthesis_v1_clusters.json is correct.
+#       (Note clinc150's count is unchanged by refinement, 151 -> 151, so its
+#       synthonly delta isolates description rewrites rather than structure.)
+#
+# Previous v0.1.6 values, for reference if a v0.1.6 comparison is ever needed:
+#   banking77 synthesis_clusters_20260523_133400_390c.json 86
+#   massive_intent synthesis_20260523_180956_3caec723.json 72
+#   massive_domain synthesis_clusters_20260523_144047_e7a1.json 20
+#   stackexchange synthesized_20260523_150419.json 131
+#   clinc150 synthesized_clusters_20260523_200126.json 169
+#   twenty_newsgroups synth_clusters_2b94.json 19
+#   goemotions cluster_set_tmp.json 27
 FIRST_SYNTH_DISCOVERK: dict[str, tuple[str, int]] = {
-    "banking77":         ("archive/investigations/synthesis_clusters_20260523_133400_390c.json", 86),
-    "massive_intent":    ("archive/investigations/synthesis_20260523_180956_3caec723.json", 72),
-    "massive_domain":    ("archive/investigations/synthesis_clusters_20260523_144047_e7a1.json", 20),
-    "stackexchange":     ("archive/investigations/synthesized_20260523_150419.json", 131),
-    "clinc150":          ("archive/investigations/synthesized_clusters_20260523_200126.json", 169),
-    "twenty_newsgroups": ("archive/investigations/synth_clusters_2b94.json", 19),
-    "goemotions":        ("archive/investigations/cluster_set_tmp.json", 27),
+    "banking77":         ("archive/investigations/synthesis_20260926_133922_dc12_clusters.json", 81),
+    "massive_intent":    ("archive/investigations/synthesis_20260926_1556_s1v1_clusters.json", 66),
+    "massive_domain":    ("archive/investigations/synthesis_20260926_235500_e0cd64b7_clusters.json", 19),
+    "stackexchange":     ("archive/investigations/synthesis_20260926_stackex_clusters.json", 132),
+    "clinc150":          ("archive/investigations/synthesis_v1_clusters.json", 151),
+    "twenty_newsgroups": ("archive/investigations/synthesis_20260927_906bc8ac_clusters.json", 20),
+    "goemotions":        ("archive/investigations/synthesis_20260927_083335_89e6_clusters.json", 29),
 }
 
 
@@ -191,16 +234,15 @@ def run_synthonly(dataset_name: str, *, seed: int = 0, reuse_existing_classify: 
 
     ``reuse_existing_classify`` skips the classify call and assembles the
     artifact from the ``seed_0.csv`` already in the workspace. Use after
-    repairing a partially-failed classify CSV (see
-    ``scripts/retry_classify_errors.py``) so the clean artifact is built without
-    re-running the whole corpus.
+    re-classifying the failed rows of a partially-failed classify CSV, so the
+    clean artifact is built without re-running the whole corpus.
     """
     if dataset_name not in DATASET_LENS:
         raise KeyError(f"no DATASET_LENS entry for {dataset_name!r}")
     lens = DATASET_LENS[dataset_name]
     ds = load_processed(dataset_name)
     k_in_scope = int(ds.meta["k_in_scope"])
-    # 512-token-capped corpus (SPEC §5.1.1 / §5.6.3), same as the production
+    # 512-token-capped corpus, same as the production
     # runs — so the synth-only classify pass sees the same truncated bodies.
     documents_path = _materialize_capped_corpus(dataset_name, ds)
 
@@ -245,17 +287,29 @@ def run_synthonly(dataset_name: str, *, seed: int = 0, reuse_existing_classify: 
     taxonomy_md = out_ws / "taxonomy.md"
     _write_synth_taxonomy_md(clusters, taxonomy_md, synth_path)
 
-    # Build the classification prompt from the synth taxonomy (force-assign
-    # matches the main run: on per lens.allow_none). Lazy import: see the module
-    # top-of-file note — BUILD_PROMPT_SCRIPT is a pending classification-split
-    # catch-up (PLAN.md) and only ablation 1 needs it.
-    from benchmarking.baselines.agentic_clustering import BUILD_PROMPT_SCRIPT
-
-    prompt_md = out_ws / "classification" / "prompt.md"
-    build_args = ["--taxonomy", str(taxonomy_md), "--output", str(prompt_md)]
-    if not lens.allow_none:
-        build_args.append("--force-assign")
-    _run_uv_script(BUILD_PROMPT_SCRIPT, build_args)
+    # Hand the synth taxonomy to the classifier the way cluster-finalize does:
+    # categories.json at the workspace root, shape [{id, name, description}]
+    # (corpus-tools/scripts/state.py, cmd_finalize). This replaces the old
+    # build_classification_prompt.py call that stood here, which commit 36861bb
+    # dissolved in the classification split — its lazy import raised ImportError
+    # and took the whole ablation down with it before any API call.
+    #
+    # The `none` entry is deliberately omitted: _run_classify reconciles it
+    # against lens.allow_none (appending for allow_none datasets, stripping
+    # otherwise), and that reconcile is what now carries the old
+    # --force-assign semantics. Writing one here would only be overwritten.
+    categories_path = out_ws / "categories.json"
+    categories_path.write_text(
+        json.dumps(
+            [
+                {"id": c["id"], "name": c["name"], "description": c["description"]}
+                for c in clusters
+            ],
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     if reuse_existing_classify:
         classify_csv_path = out_ws / "classification" / "classifications" / "seed_0.csv"
@@ -405,7 +459,7 @@ def _run_notask_orchestrator(
         "--permission-mode", "bypassPermissions",
     ]
     # The orchestrator must run on the Claude Code Max subscription, not metered
-    # API (SPEC §5.6.1). _run_classify -> load_secrets_into_env() injects
+    # API. _run_classify -> load_secrets_into_env() injects
     # ANTHROPIC_API_KEY into os.environ after the first dataset's classify, and
     # call_claude's `claude -p` subprocess inherits it -> silently routes every
     # subsequent orchestrator to metered billing, which exhausted the API credit
@@ -446,7 +500,7 @@ def run_notask(
     lens = DATASET_LENS[dataset_name]
     ds = load_processed(dataset_name)
     k_in_scope = int(ds.meta["k_in_scope"])
-    # 512-token-capped corpus (SPEC §5.1.1 / §5.6.3), same as the production
+    # 512-token-capped corpus, same as the production
     # runs — feeds both the agent loop (via init) and the classify pass.
     documents_path = _materialize_capped_corpus(dataset_name, ds)
 
@@ -475,7 +529,7 @@ def run_notask(
             f"[notask/{dataset_name}] init (k_range=[{k_min},{k_max}], "
             f"allow_none={lens.allow_none}, n={len(ds.documents)}, instructions=BLANK)"
         )
-        # The ablation: blank user instructions (cluster-run/SKILL.md L117-118 fallback).
+        # The ablation: blank user instructions (cluster-run/SKILL.md fallback).
         _init_workspace(
             workspace_dir=workspace_dir,
             documents_path=documents_path,
@@ -486,17 +540,20 @@ def run_notask(
 
         t_start = time.perf_counter()
         print(f"[notask/{dataset_name}] dispatching orchestrator on {ORCHESTRATOR_MODEL} (dataset name stripped)")
-        orch = _run_notask_orchestrator(
+        orch = dispatch_orchestrator_with_retry(
+            lambda: _run_notask_orchestrator(
+                workspace_dir=workspace_dir,
+                dataset=dataset_name,
+                k_min=k_min,
+                k_max=k_max,
+                allow_none=lens.allow_none,
+                initial_proposers=initial_proposers,
+                max_agent_dispatches=max_agent_dispatches,
+            ),
             workspace_dir=workspace_dir,
-            dataset=dataset_name,
-            k_min=k_min,
-            k_max=k_max,
-            allow_none=lens.allow_none,
-            initial_proposers=initial_proposers,
-            max_agent_dispatches=max_agent_dispatches,
+            label=f"notask/{dataset_name}",
         )
         print(f"[notask/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
-        _ensure_orchestrator_outputs(workspace_dir)
 
     print(
         f"[notask/{dataset_name}] classifying {len(ds.documents)} docs on "
@@ -666,7 +723,7 @@ def _run_nok_orchestrator(
         "--permission-mode", "bypassPermissions",
     ]
     # The orchestrator must run on the Claude Code Max subscription, not metered
-    # API (SPEC §5.6.1). Strip ANTHROPIC_API_KEY so `claude -p` falls back to the
+    # API. Strip ANTHROPIC_API_KEY so `claude -p` falls back to the
     # subscription login on every dataset — same rationale as _run_notask_orchestrator.
     os.environ.pop("ANTHROPIC_API_KEY", None)
     t0 = time.perf_counter()
@@ -727,7 +784,7 @@ def run_nok(
     lens = DATASET_LENS[dataset_name]
     ds = load_processed(dataset_name)
     k_in_scope = int(ds.meta["k_in_scope"])
-    # 512-token-capped corpus (SPEC §5.1.1 / §5.6.3), same as the production
+    # 512-token-capped corpus, same as the production
     # runs — feeds both the agent loop (via init) and the classify pass.
     documents_path = _materialize_capped_corpus(dataset_name, ds)
 
@@ -772,16 +829,19 @@ def run_nok(
 
         t_start = time.perf_counter()
         print(f"[nok/{dataset_name}] dispatching orchestrator on {ORCHESTRATOR_MODEL} (no target k)")
-        orch = _run_nok_orchestrator(
+        orch = dispatch_orchestrator_with_retry(
+            lambda: _run_nok_orchestrator(
+                workspace_dir=workspace_dir,
+                dataset=dataset_name,
+                n_docs=n_docs,
+                allow_none=lens.allow_none,
+                initial_proposers=initial_proposers,
+                max_agent_dispatches=max_agent_dispatches,
+            ),
             workspace_dir=workspace_dir,
-            dataset=dataset_name,
-            n_docs=n_docs,
-            allow_none=lens.allow_none,
-            initial_proposers=initial_proposers,
-            max_agent_dispatches=max_agent_dispatches,
+            label=f"nok/{dataset_name}",
         )
         print(f"[nok/{dataset_name}] orchestrator returned in {orch['wall_clock_s']:.1f}s")
-        _ensure_orchestrator_outputs(workspace_dir)
 
     print(
         f"[nok/{dataset_name}] classifying {n_docs} docs on "
