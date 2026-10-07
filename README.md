@@ -54,7 +54,7 @@ uv run python -m benchmarking.data_processing.<builder>        # writes tables t
 | Main results | `run_lda`, `run_sbert_kmeans`, `run_bertopic`, `run_openai_embedding_kmeans`, `run_clusterllm --phase all`, `run_topicgpt`, `run_huang_he`, `run_agentic_clustering --all` (given k) and `--all --discover-k`, `run_ablations --nok --all` (no k) | `build_results_table` |
 | Seed variance | `run_agentic_clustering --all --discover-k --seed {1,2}` | `build_seed_table` |
 | Ablations | `run_ablations --synthonly --all`, `run_ablations --notask --all` | `build_ablation_table` |
-| Design ablations | `run_proposer_sweep --variant all --all`, `run_sample_size_sweep --variant all --all` | `compare_proposer_sweep`, `compare_sample_size_sweep` (the table is assembled from their summaries in `results/`) |
+| Design ablations | `run_proposer_sweep --variant all --all`, `run_sample_size_sweep --variant all --all` | `compare_proposer_sweep`, `compare_sample_size_sweep`, then `build_design_ablations_table` |
 
 Each runner's `--help` lists its options; `--only <dataset>` restricts a run to some datasets. Every step caches its outputs under `data/` and `results/`, so runs can be split up or resumed. `--paper-config` on `run_agentic_clustering` and `run_ablations` reproduces the exact configuration of the paper's runs.
 
