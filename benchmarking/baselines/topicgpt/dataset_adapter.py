@@ -5,27 +5,26 @@ and indexes on ``df["text"]`` (`generation_1.py` and `assignment.py`). Later
 phases tack on ``responses`` and ``prompted_docs`` columns to the same
 dataframe and write it back. Any other columns we include get passed through.
 
-Text policy: per SPEC §5.1.1, all LLM-input document bodies are truncated to
+Text policy: all LLM-input document bodies are truncated to
 512 tokens (tiktoken ``cl100k_base``). The cap is applied here so every
 downstream phase --- generation, refinement, assignment, correction --- sees
 identical text.
 
 Label policy: out-of-scope ("none") documents are PASSED THROUGH, not
-filtered. TopicGPT has no native unassigned path (verified upstream —
-see SPEC §5.6.2 pre-run verifications); we feed it the full corpus
+filtered. TopicGPT has no native unassigned path (verified upstream);
+we feed it the full corpus
 including is_none docs because at deployment time the method wouldn't
 know which docs are out-of-scope. Filtering here would constitute a
 privileged-information leak — the same kind we flag for the Huang & He
-20%-seed config in SPEC §5.6.3. The method then assigns its own choice
+20%-seed config. The method then assigns its own choice
 of topic to each is_none doc, and ``result_parser.py`` measures the
 predictions against the gold labels (including ``__none__``) without
-special handling — this is exactly the penalty SPEC §5.5.3 anticipates
+special handling — this is exactly the penalty the paper describes
 for non-"none"-aware methods on CLINC OOS / GoEmotions neutral.
 
 We pass our canonical ``doc_id`` and ``gold_label_id`` through as extra
 columns so the result parser can map LLM-produced topic names back to a
-contiguous cluster_id under ``results/predictions/topicgpt/<dataset>/`` per
-SPEC §5.11.
+contiguous cluster_id under ``results/predictions/topicgpt/<dataset>/``.
 """
 
 from __future__ import annotations

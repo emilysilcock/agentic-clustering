@@ -33,6 +33,10 @@ agentic-clustering-anonymous.zip
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 
+# Stray scratch that headless benchmark sub-agents drop in the repo root
+/_*
+/*.err
+
 # Editor / OS
 .vscode/
 .idea/
@@ -42,6 +46,9 @@ Thumbs.db
 # Paper draft + spec — kept local until publication clears the anonymity window.
 # Flip by removing the next line once the paper is public.
 /paper/
+
+# Peer reviews (ARR/OpenReview) — confidential, never versioned even after /paper/ is un-ignored
+paper/reviews/
 
 # (Build artefacts also listed in case /paper/ is un-gitignored later)
 paper/*.aux

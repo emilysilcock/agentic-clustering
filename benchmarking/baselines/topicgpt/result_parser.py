@@ -1,4 +1,4 @@
-"""Phase 5: parse TopicGPT outputs into the SPEC §5.11 prediction layout.
+"""Phase 5: parse TopicGPT outputs into the benchmark prediction layout.
 
 Reads ``data/topicgpt/<ds>/corrected.jsonl`` (or ``assignment.jsonl`` if
 correction wasn't run), maps LLM-produced topic names to contiguous cluster
@@ -10,7 +10,7 @@ canonical gold labels, and calls
 
 After phase 4 (correction), rows whose ``responses`` field still parses to
 zero valid topic names are force-assigned to the **largest predicted
-cluster**. This matches the SPEC §5.5 framing that TopicGPT "joins the
+cluster**. This matches the paper's framing that TopicGPT "joins the
 non-'none'-aware baselines" --- the method has no native unassigned path,
 so we don't invent one. The fallback rate is recorded in ``meta.json``
 (``n_unparseable``, ``n_hallucinated_post_correction``) so reviewers can
@@ -25,7 +25,7 @@ docstring). The method then assigns its own choice of topic to each
 is_none doc. Here we use those predictions as-is; metrics are computed
 against the gold labels (which include ``__none__`` for these rows),
 naturally penalising TopicGPT for not having a native "none" output
---- the penalty SPEC §5.5.3 anticipates.
+--- the penalty described in the paper.
 
 The fallback-to-largest-cluster policy described in
 "Fallback policy" above still applies to rows that fail parsing after
@@ -59,7 +59,7 @@ FRONTIER_MODEL = "claude-opus-4-7"   # phases 1+2 (generate, refine) via Claude 
 BULK_MODEL = "gpt-5-mini"            # phases 3+4 (assign, correct) via OpenAI Batch
 
 # Flat split of the $100/mo Claude Code Max subscription across the 7 datasets
-# in the sweep (symmetric with huang_he / agentic_clustering per SPEC §5.6.3).
+# in the sweep (symmetric with huang_he / agentic_clustering).
 SUBSCRIPTION_USD_PER_DATASET = 100.0 / 7
 
 # OpenAI gpt-5-mini Batch API pricing (50% off sync rates). Pinned as a paper
@@ -224,7 +224,7 @@ def write(
     gold_ids = [int(d["gold_label_id"]) for d in ds.documents]
     metrics = compute_partition_metrics(pred_ids=pred_ids, gold_ids=gold_ids)
 
-    # Cost (SPEC §5.6.3, symmetric with huang_he / agentic_clustering):
+    # Cost (symmetric with huang_he / agentic_clustering):
     #   * subscription_usd — phases 1+2 (generate, refine) run on Opus 4.7 via
     #     the Claude Code Max subscription, which has no per-call USD; charged
     #     as a flat $100/7 per dataset (sums to $100 across the 7-dataset sweep).

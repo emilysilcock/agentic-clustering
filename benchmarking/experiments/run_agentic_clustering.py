@@ -1,17 +1,17 @@
 """CLI runner for our method (the agentic-clustering plugin).
 
 Defaults to a Banking77-only run — it's the smallest dataset and the
-designated pilot per SPEC §8. Use ``--all`` for the full overnight sweep
+designated pilot. Use ``--all`` for the full sweep
 (strictly sequential, smallest-up).
 
 Examples:
-    # Smoke-test the agent loop on Banking77 without burning Haiku quota
+    # Smoke-test the agent loop on Banking77 without the gpt-5-mini classification spend
     uv run --native-tls python -m benchmarking.experiments.run_agentic_clustering --skip-classify
 
     # Full pilot on Banking77 (agent loop + classify)
     uv run --native-tls python -m benchmarking.experiments.run_agentic_clustering
 
-    # Overnight sweep, all 7 datasets in size order
+    # Full sweep, all 7 datasets in size order
     uv run --native-tls python -m benchmarking.experiments.run_agentic_clustering --all
 """
 
@@ -26,8 +26,8 @@ from benchmarking.baselines.agentic_clustering import (
     run_agentic_clustering,
 )
 
-# Sweep order is smallest-up, with Banking77 forced to the front per the
-# pilot decision (smallest plus the SPEC §8 go/no-go dataset). MASSIVE-Intent
+# Sweep order is smallest-up, with Banking77 forced to the front as the
+# pilot (go/no-go) dataset. MASSIVE-Intent
 # and MASSIVE-Domain are technically marginally smaller but Banking77 leads.
 SWEEP_ORDER = [
     "banking77",
@@ -92,7 +92,7 @@ def main() -> None:
     mode_group.add_argument(
         "--skip-classify",
         action="store_true",
-        help="Stop after the agent loop produces final_taxonomy.json. No Haiku spend.",
+        help="Stop after the agent loop produces final_taxonomy.json. No gpt-5-mini classification spend.",
     )
     mode_group.add_argument(
         "--resume-classify",
@@ -118,7 +118,7 @@ def main() -> None:
         action="store_true",
         help=(
             "Reproduce the published seed=0 main-results configuration (3 initial "
-            "proposers, 8-dispatch cap, 2026-05-22/23) instead of the shipped "
+            "proposers, 8-dispatch cap) instead of the shipped "
             "plugin's current defaults. The plugin itself is untouched either way."
         ),
     )

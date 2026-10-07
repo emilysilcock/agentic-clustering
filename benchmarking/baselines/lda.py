@@ -1,7 +1,7 @@
-"""LDA baseline (SPEC §5.2, Cat 1).
+"""LDA baseline (Cat 1).
 
 sklearn's CountVectorizer + LatentDirichletAllocation. Deterministic given a
-seed; single seed per SPEC §5.7. Returns per-doc cluster ids (argmax over the
+seed; single seed. Returns per-doc cluster ids (argmax over the
 doc-topic distribution), per-doc confidences (max of that distribution), and
 per-topic top words so the taxonomy.json sidecar carries something readable.
 """

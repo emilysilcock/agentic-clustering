@@ -13,11 +13,10 @@ Drives all phases via ``benchmarking.baselines.topicgpt``:
                                 assignment had an unusually high error rate)
   Phase 5 ``write``         --- parse + score -> results/predictions/topicgpt/<ds>/seed=0.{jsonl,meta.json}
 
-Discover-$k$ only (SPEC §5.5) --- no ``--k`` flag. TopicGPT appears only in
+Discover-$k$ only --- no ``--k`` flag. TopicGPT appears only in
 the discover-$k$ panel of the results table.
 
-Routing per SPEC §5.6.2 (post-2026-05-23 revision) and the §5.6 >1,000-text
-rule: phases with >1,000 calls go cheap (gpt-5-mini via OpenAI);
+Routing per the >1,000-text rule: phases with >1,000 calls go cheap (gpt-5-mini via OpenAI);
 phases with ≪1,000 calls stay on Opus 4.7 via the Claude Code subscription.
 
 Examples:

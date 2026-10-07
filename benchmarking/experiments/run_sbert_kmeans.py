@@ -1,6 +1,6 @@
 """SBERT + k-means runner over all 7 processed datasets.
 
-Deterministic; single seed per SPEC §5.7.
+Deterministic; single seed.
 
 Usage:
     uv run --native-tls python -m benchmarking.experiments.run_sbert_kmeans

@@ -37,7 +37,7 @@ import torch.nn.functional as F
 
 
 # ---------------------------------------------------------------------------
-# Pinned hyperparameters (from upstream scripts/finetune.sh; flagged in SPEC).
+# Pinned hyperparameters (from upstream scripts/finetune.sh).
 # ---------------------------------------------------------------------------
 UPSTREAM_LR = 2e-6
 UPSTREAM_EPOCHS = 15

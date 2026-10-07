@@ -3,7 +3,7 @@
 > Internal harness doc. The main README for the plugin and the repo is
 > [`plugin/README.md`](../../plugin/README.md).
 
-Loaders for the 7 benchmark datasets defined in `paper/SPEC.md` §5.1. Each loader
+Loaders for the 7 benchmark datasets used in the paper. Each loader
 normalises its source into a unified schema and writes to `data/derived/<name>/`.
 Loaders are deterministic — every method in `benchmarking/experiments/` reads from
 these files; no method should call `load_dataset` itself.
@@ -21,10 +21,9 @@ uv run --native-tls python -m benchmarking.data_processing.process_all --only ba
 uv run --native-tls python -m benchmarking.data_processing.banking77
 ```
 
-The `--native-tls` flag and an unset `SSL_CERT_FILE` are required on the Windows
-machine this project was developed on — see the project memory file
-`feedback-windows-tls-stack` for why. `truststore` is injected automatically by
-`benchmarking/__init__.py` on win32.
+On some Windows setups `uv` needs the `--native-tls` flag and an unset
+`SSL_CERT_FILE` to get past TLS certificate errors. `truststore` is injected
+automatically by `benchmarking/__init__.py` on win32.
 
 ## Output layout
 
@@ -66,7 +65,7 @@ data/derived/<dataset>/
 | `massive_domain.py` | 2,974 | 18 | no | HF `mteb/amazon_massive_scenario` EN test. `process_all` verifies the texts align row-by-row with `massive_intent`. |
 | `goemotions.py` | 45,446 | 27 | yes (16,021) | HF `google-research-datasets/go_emotions` config `simplified`, train+val+test concatenated. Neutral mapped to `-1`. Multi-label rows in `simplified` (8,817) are skipped. |
 | `twenty_newsgroups.py` | 18,331 | 20 | no | sklearn `fetch_20newsgroups(subset='all', remove=('headers','footers','quotes'))`. 515 rows dropped because the text was empty after stripping. |
-| `stackexchange.py` | 4,156 | 121 | no | ClusterLLM-small (`small.jsonl` from the ClusterLLM data zip). Auto-downloaded to `data/raw/clusterllm/` on first run. **Not** the MTEB `stackexchange-clustering` HF dataset — see SPEC §5.1.1. |
+| `stackexchange.py` | 4,156 | 121 | no | ClusterLLM-small (`small.jsonl` from the ClusterLLM data zip). Auto-downloaded to `data/raw/clusterllm/` on first run. **Not** the MTEB `stackexchange-clustering` HF dataset, which is 25 per-subset clusterings rather than one flat partition. |
 
 Numbers above are what `meta.json` reports after the first run; treat them as
 load-bearing assertions in tests.
@@ -88,5 +87,4 @@ load-bearing assertions in tests.
    Use `base.format_doc_id`, `base.build_meta`. For datasets where source label ids are
    sparse or filtered, call `base.remap_in_scope_label_ids` to compact ids to `0..k-1`.
 2. Register `(load_fn, expected_k, expects_none)` in `process_all.REGISTRY`.
-3. Add a one-liner to `SPEC.md` §5.1.
-4. Run `python -m benchmarking.data_processing.process_all --only <name>` to verify.
+3. Run `python -m benchmarking.data_processing.process_all --only <name>` to verify.

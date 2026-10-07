@@ -9,12 +9,12 @@
 |       | data/topicgpt/<ds>/updated.jsonl    |   (Claude Code, Opus 4.7)           |
 | 3     | data/topicgpt/<ds>/assignment.jsonl | ``batch_assigner.assign``           |
 |       |                                     |   (OpenAI Batch API, gpt-5-mini)    |
-| 4     | data/topicgpt/<ds>/corrected.jsonl  | vendored ``correct_topics``         |
-|       |                                     |   (OpenAI sync, gpt-5-mini)         |
+| 4     | data/topicgpt/<ds>/corrected.jsonl  | ``batch_correct.correct``           |
+|       |                                     |   (OpenAI Batch API, gpt-5-mini)    |
 | 5     | results/predictions/topicgpt/...    | ``result_parser.write``             |
 
-Routing follows SPEC §5.6.2 (TopicGPT row, 2026-05-24 revision) and the
-§5.6 >1,000-text rule:
+Routing follows the >1,000-text rule (a phase that runs the LLM over more
+than 1,000 texts goes to the cheap tier; otherwise frontier):
 
 * Phase 1 runs the LLM over the corpus until ``early_stop=200`` saturation
   (per the paper's recommendation: stop "when no new topics are generated
@@ -28,15 +28,14 @@ Routing follows SPEC §5.6.2 (TopicGPT row, 2026-05-24 revision) and the
   (50% discount, ≤24 h SLA), with auto-caching on the stable prompt prefix.
 * Phase 4 reprompts the ~700–1,000 rows whose phase-3 response didn't
   match the upstream regex. Routed to the cheap tier (gpt-5-mini via
-  OpenAI sync) for two reasons: (a) volume is high enough that an Opus
+  OpenAI Batch) for two reasons: (a) volume is high enough that an Opus
   subscription burn would be wasteful, and (b) model consistency --- the
   same model produced the assignments, so the correction reprompt sees
   the same output distribution. The runner reports the failure count
   before phase 4 fires so the user can sanity-check the bill regardless.
 
 Discover-$k$ only --- no ``--k`` flag; TopicGPT decides $k$ itself.
-TopicGPT appears only in the discover-$k$ panel of the results table
-(SPEC §5.5).
+TopicGPT appears only in the discover-$k$ panel of the results table.
 """
 
 from __future__ import annotations
@@ -56,7 +55,7 @@ from benchmarking.paths import DATA
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
-# SPEC §5.6.2 locked pinning (TopicGPT row, post-2026-05-23 revision)
+# Model pinning per phase.
 FRONTIER_API = "claude_code"
 FRONTIER_MODEL = "claude-opus-4-7"   # via Claude Code Max subscription
 CHEAP_API = "openai"
@@ -70,7 +69,7 @@ GENERATION_TOP_P = 1.0
 # ("stop when no new topics are generated for some threshold (e.g., 200
 # documents)"). The vendored code default is 1000, but the paper's number
 # is what's actually empirically tuned and (a) finishes much faster, (b)
-# keeps per-phase call counts well under the SPEC §5.6 >1,000-text rule so
+# keeps per-phase call counts well under the >1,000-text rule so
 # phase 1 routes to the frontier (Opus) tier rather than the cheap tier.
 GENERATION_EARLY_STOP = 200
 
@@ -128,9 +127,9 @@ def generate(
 ) -> PhaseOutput:
     """Phase 1: discover topics by streaming through the corpus (Opus 4.7).
 
-    Per SPEC §5.6.2 (TopicGPT row, 2026-05-23 revision): at the paper's
+    At the paper's
     recommended ``early_stop=200``, per-dataset call counts are ~k_gold + 200
-    = ~220–350, well under the SPEC §5.6 >1,000-text threshold. Runs on the
+    = ~220–350, well under the >1,000-text threshold. Runs on the
     frontier tier (Opus 4.7 via the Claude Code Max subscription).
     Sequential by construction --- each prompt embeds the topic tree grown
     from prior calls --- so batch parallelism does not apply.
@@ -321,7 +320,7 @@ def correct(
     """Phase 4: reassign rows whose responses are 'Error' or hallucinated.
 
     Routes through ``batch_correct.correct()`` (OpenAI Batch API,
-    ``gpt-5-mini``) per the SPEC §5.6.2 revision (2026-05-24). The
+    ``gpt-5-mini``). The
     vendored ``correct_topics`` only supports sync iterative prompts (or
     vLLM batch); for the ~hundreds-to-low-thousands of reprompts that
     surface after phase 3 we want OpenAI's batch 50% discount + parallelism

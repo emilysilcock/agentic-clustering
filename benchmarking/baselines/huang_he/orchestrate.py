@@ -15,7 +15,7 @@ it, kept here so callers can import a single ``orchestrate.*`` surface.
 |       |                                              |   (OpenAI Batch, gpt-5-mini)   |
 | 4     | results/predictions/huang_he/<ds>/seed=<n>.* | ``result_parser.write``        |
 
-Discover-$k$ only (SPEC §5.5) --- the method has no ``k`` input.
+Discover-$k$ only --- the method has no ``k`` input.
 Huang & He appears only in the discover-$k$ panel of the results table.
 """
 

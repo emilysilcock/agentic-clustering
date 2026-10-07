@@ -3,7 +3,7 @@
 Every per-dataset module in this package exports `load() -> ProcessedDataset`.
 `process_all.py` calls `validate()` and `write()` for each dataset.
 
-Schema is documented in `paper/SPEC.md` §5.1.1 and `benchmarking/data_processing/README.md`.
+Schema is documented in `benchmarking/data_processing/README.md`.
 """
 
 from __future__ import annotations

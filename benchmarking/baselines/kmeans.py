@@ -5,7 +5,7 @@ assignments. Embedding production lives in `benchmarking.embeddings.*` so
 multiple methods (SBERT+kmeans, LLM-embedding+kmeans, ...) share both this
 clusterer and the per-model embedding cache.
 
-Deterministic given the seed; single seed per SPEC §5.7.
+Deterministic given the seed; single seed.
 """
 
 from __future__ import annotations

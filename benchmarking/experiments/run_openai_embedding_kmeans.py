@@ -1,9 +1,9 @@
 """LLM-embedding + k-means runner over all 7 processed datasets.
 
-Uses OpenAI `text-embedding-3-large` via the Batch API (per SPEC §5.6.3) and
-sklearn k-means with `k = k_in_scope` per SPEC §5.5.
+Uses OpenAI `text-embedding-3-large` via the Batch API and
+sklearn k-means with `k = k_in_scope`.
 
-Deterministic given the seed; single seed per SPEC §5.7.
+Deterministic given the seed; single seed.
 
 Usage:
     uv run --native-tls python -m benchmarking.experiments.run_openai_embedding_kmeans

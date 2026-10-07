@@ -15,7 +15,7 @@ Helper signatures (from ``_vendored/label_generation.py`` and
 * ``prompt_construct_merge_label(label_list: list[str]) -> str``
 * ``prompt_construct(label_list: list[str], sentence: str) -> str``
 
-For the 0%-seed configuration (SPEC §5.6.2), pass ``given_labels=[]`` to
+For the 0%-seed configuration, pass ``given_labels=[]`` to
 ``prompt_construct_generate_label``.
 """
 

@@ -20,7 +20,7 @@ Only the subset of the `perspective/` track that we actually drive from
 **Not vendored** (explicitly omitted):
 
 - `1_predict_triplet/predict_triplet.py`, `tools.py`, `prompts.json` —
-  replaced by `../triplet_judge.py` + `../prompts.json` (Claude Code path).
+  replaced by `../triplet_judge.py` + `../prompts.json`.
 - `1_predict_triplet/calculate_accuracy.py` — offline analysis we don't need.
 - `1_predict_triplet/random_triplet_sampling.py` — random-sampling baseline,
   not part of the canonical ClusterLLM result.
@@ -28,7 +28,7 @@ Only the subset of the `perspective/` track that we actually drive from
 - `2_finetune/finetune_e5.py`, `get_embedding_e5.py`, `e5_utils.py` — the E5
   encoder variant; we use Instructor-large per the paper's headline result.
 - `granularity/` — separate experimental track ("how many clusters?") we
-  don't use; we take `k` from `k_in_scope` per SPEC §5.5.
+  don't use; we take `k` from `k_in_scope`.
 - `scripts/*.sh` — bash drivers; `orchestrate.py` drives subprocesses directly.
 
 ## Edits
@@ -49,12 +49,12 @@ aliases so the Instructor prompts work with our canonical dataset names
 instruction strings the authors already provide for ``clinc`` /
 ``go_emotion`` / ``TwentyNewsgroupsClustering`` respectively;
 ``massive_domain`` is a new entry parallel to the upstream
-``massive_intent`` entry. Flag in paper appendix as a configuration detail.
+``massive_intent`` entry.
 
 ## What was NOT touched
 
 - All scientific logic (sampler, evaluator, trainer, model class) is
   byte-identical to upstream. Any difference between our reported numbers
-  and the paper is attributable to the LLM swap (Claude Code Opus 4.7 in
-  place of OpenAI gpt-3.5-turbo/gpt-4) and to our dataset adapter, not to
+  and the paper is attributable to the LLM swap (gpt-5-mini via the
+  OpenAI Batch API in place of gpt-3.5-turbo/gpt-4) and to our dataset adapter, not to
   changes here.

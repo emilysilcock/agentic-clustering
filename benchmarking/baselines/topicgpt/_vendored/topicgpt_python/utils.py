@@ -72,7 +72,7 @@ class APIClient:
         self.client = None
         # Vendored addition: usage tracking, accumulated across iterative_prompt
         # calls so orchestrate.py / batch_assigner.py can record cost in the
-        # SPEC §5.11 meta.json schema.
+        # meta.json schema.
         self.usage = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -352,7 +352,7 @@ class APIClient:
                     return [output.outputs[0].text for output in vllm_output][0]
                 
                 elif self.api == "claude_code":
-                    # Vendored addition (SPEC §5.6.2): Opus 4.7 via
+                    # Vendored addition: Opus 4.7 via
                     # Claude Code Max subscription. The CLI doesn't expose
                     # temperature / top_p / max_tokens, so those args are
                     # accepted-and-ignored to keep the call-site signature
@@ -372,7 +372,7 @@ class APIClient:
                     return response_text
 
                 elif self.api == "anthropic":
-                    # Vendored addition (SPEC §5.6.2): metered sync Anthropic
+                    # Vendored addition: metered sync Anthropic
                     # SDK. Used for correction (small N). Bulk per-doc
                     # assignment goes through the Batch API, not here ---
                     # see benchmarking/baselines/topicgpt/batch_assigner.py.

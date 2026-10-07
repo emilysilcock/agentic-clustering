@@ -2,7 +2,7 @@
 
 Replaces the vendored ``assign_topics``. Same prompt template
 (``prompts/assignment.txt``, byte-identical to upstream); different dispatch.
-SPEC §5.6.2 (TopicGPT row, 2026-05-23 revision) pins this phase to
+This phase is pinned to
 ``gpt-5-mini`` via the OpenAI Batch API for the 50% batch discount, with
 OpenAI's automatic prompt caching on the stable prefix.
 
@@ -20,7 +20,7 @@ structure each request so:
   follow the marker as the variable tail.
 
 OpenAI hashes the longest matching prefix automatically, so we don't need
-explicit cache-control annotations. Per SPEC §5.6.3, this is reliable
+explicit cache-control annotations. This is reliable
 across all our seven datasets because every classification prompt's stable
 prefix is well over 1,024 tokens.
 
@@ -63,7 +63,7 @@ MAX_COMPLETION_TOKENS = 500
 # 50,000 = the per-batch request hard cap; we chunk to 25,000 instead because
 # the per-batch input-file size cap (200 MB) is the tighter constraint when
 # the cached prefix + per-doc tail averages ~5 KB/request. GoEmotions phase 3
-# tripped the 200 MB limit at 45,446 requests with a 50k chunk (2026-05-25);
+# tripped the 200 MB limit at 45,446 requests with a 50k chunk;
 # 25k chunks comfortably stay under for every dataset we have.
 BATCH_REQUEST_LIMIT = 25_000
 COMPLETION_WINDOW = "24h"

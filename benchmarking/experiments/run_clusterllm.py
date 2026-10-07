@@ -1,17 +1,20 @@
 """CLI runner for the ClusterLLM baseline.
 
 Drives all phases via ``benchmarking.baselines.clusterllm.orchestrate``.
-Tonight's slice is ``--phase {embed,sample,judge}`` (no GPU needed); phases
-``finetune`` and ``cluster`` run tomorrow on FASRC GPU.
+``finetune`` and ``cluster`` need a CUDA GPU (we used a single A100: roughly
+15-25 min per dataset to fine-tune, 5-15 min to cluster). ``embed`` runs on
+CPU but is slow on the larger corpora; a GPU helps there too. Every phase
+caches its output, so a run can be split or resumed, and ``--only`` lets
+datasets run in parallel on separate machines.
 
 Examples:
-    # Full tonight slice for one dataset
-    uv run --native-tls python -m benchmarking.experiments.run_clusterllm \\
-        --phase all-tonight --only banking77
+    # Everything up to fine-tuning (embed, sample, judge) for one dataset
+    uv run python -m benchmarking.experiments.run_clusterllm \\
+        --phase pre-finetune --only banking77
 
-    # Just the overnight LLM-judging step across all 7 datasets
-    uv run --native-tls python -m benchmarking.experiments.run_clusterllm \\
-        --phase judge --concurrency 4
+    # The full pipeline for one dataset, on a GPU machine
+    uv run python -m benchmarking.experiments.run_clusterllm \\
+        --phase all --only banking77
 """
 
 from __future__ import annotations
@@ -40,14 +43,13 @@ DATASETS = [
     "stackexchange",
 ]
 
-# Tomorrow's GPU phases. ``all-tonight`` is the CPU+LLM subset we run from
-# this laptop; ``all`` would chain through finetune+cluster but those aren't
-# implemented yet (TODO once FASRC scaffolding lands).
+# ``pre-finetune`` runs embed, sample and judge; ``all`` chains through
+# convert, finetune and cluster as well.
 PHASE_CHOICES = (
     "embed",
     "sample",
     "judge",
-    "all-tonight",
+    "pre-finetune",
     "convert",
     "finetune",
     "cluster",
@@ -57,14 +59,14 @@ PHASE_CHOICES = (
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=PHASE_CHOICES, default="all-tonight")
+    parser.add_argument("--phase", choices=PHASE_CHOICES, default="pre-finetune")
     parser.add_argument("--only", nargs="+", choices=DATASETS)
     parser.add_argument("--concurrency", type=int, default=4)
     parser.add_argument(
         "--judge-backend",
         choices=("openai_batch", "claude"),
         default="openai_batch",
-        help="Phase-2 judging backend; default per SPEC §5.6.3.",
+        help="Phase-2 judging backend.",
     )
     parser.add_argument("--model", default=None,
                         help="Model id; defaults: gpt-5-mini for openai_batch, "
@@ -79,9 +81,9 @@ def main() -> None:
 
     names = args.only or DATASETS
 
-    do_embed = args.phase in ("embed", "all-tonight", "all")
-    do_sample = args.phase in ("sample", "all-tonight", "all")
-    do_judge = args.phase in ("judge", "all-tonight", "all")
+    do_embed = args.phase in ("embed", "pre-finetune", "all")
+    do_sample = args.phase in ("sample", "pre-finetune", "all")
+    do_judge = args.phase in ("judge", "pre-finetune", "all")
     do_convert = args.phase in ("convert", "finetune", "cluster", "all")
     do_finetune = args.phase in ("finetune", "cluster", "all")
     do_cluster = args.phase in ("cluster", "all")

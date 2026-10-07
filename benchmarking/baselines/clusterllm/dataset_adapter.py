@@ -9,18 +9,18 @@ This adapter reads the canonical dataset (the same one every other method
 in ``benchmarking/`` consumes, via ``load_processed``) and writes the
 ClusterLLM-shaped JSONL into ``data/clusterllm/<dataset>/large.jsonl``.
 
-Text policy: per SPEC §5.1.1, all LLM-input document bodies are truncated
-to 512 tokens (tiktoken ``cl100k_base``). The cap is applied here so that
-every downstream phase — Instructor encoding, triplet sampling, Claude
-judging — sees identical text. Bytes that would have been seen only by a
-non-LLM phase are not preserved separately; the SPEC's intent is that the
-512-token-capped text is the unit of analysis for this baseline.
+Text policy: all LLM-input document bodies are truncated to 512 tokens
+(tiktoken ``cl100k_base``). The cap is applied here so that every
+downstream phase — Instructor encoding, triplet sampling, LLM judging —
+sees identical text. Bytes that would have been seen only by a non-LLM
+phase are not preserved separately; the 512-token-capped text is the unit
+of analysis for this baseline.
 
 Label policy: we pass the integer ``gold_label_id`` through. The author
 code only uses the label for diagnostic/oracle "would the gold disagree"
 analyses (``output`` field in ``triplets.json``) and doesn't feed it to the
-LLM. ``is_none`` documents are passed through to the model (mirroring the
-TopicGPT adapter fix on 2026-05-24) — at deployment time the method
+LLM. ``is_none`` documents are passed through to the model (as in the
+TopicGPT adapter) — at deployment time the method
 wouldn't know which docs are out-of-scope, so filtering them here would be
 a privileged-information leak vs the classical baselines (LDA, SBERT+kmeans,
 BERTopic, LLM-embedding+kmeans) which all cluster the full corpus.
@@ -62,8 +62,7 @@ def adapt(dataset_name: str, *, force: bool = False) -> AdaptedDataset:
     OOS and GoEmotions neutral) are passed through — at deployment the method
     wouldn't know which docs are out-of-scope, so filtering them here would be
     a privileged-information leak vs the classical baselines that cluster the
-    full corpus. Metrics naturally penalise the lack of a native "none" output
-    per SPEC §5.5.3.
+    full corpus. Metrics naturally penalise the lack of a native "none" output.
     """
     import tiktoken
 

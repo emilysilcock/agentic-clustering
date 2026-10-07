@@ -23,10 +23,8 @@ benchmarking/        paper experiments — Python package for evaluating the plu
   baselines/           prior clustering methods
   evaluation/          shared metrics
   experiments/         runner scripts (benchmark x method)
-slurm/               FASRC/SLURM harness for the GPU-bound baseline phases (see its README)
 data/                benchmark data (gitignored — downloaded from HuggingFace)
 results/             figures, tables, logs, predictions (gitignored)
-paper/               manuscript
 ```
 
 ## Paper experiments
@@ -43,7 +41,9 @@ from benchmarking.paths import ensure_data_dirs, DATA_RAW
 ensure_data_dirs()
 ```
 
-Two internal READMEs document harness details that do not belong in the user-facing docs: [`benchmarking/data_processing/README.md`](benchmarking/data_processing/README.md) covers the seven benchmark dataset loaders and their unified schema, and [`slurm/README.md`](slurm/README.md) covers running the ClusterLLM baseline's GPU phases on a SLURM cluster.
+The ClusterLLM baseline is the only step that needs a GPU: its fine-tuning and clustering phases need CUDA (we used a single A100, roughly 15–25 minutes per dataset to fine-tune and 5–15 to cluster). `run_clusterllm --phase all` runs the whole pipeline; phases cache their output, and `--only <dataset>` lets datasets run in parallel on separate machines.
+
+An internal README, [`benchmarking/data_processing/README.md`](benchmarking/data_processing/README.md), covers the seven benchmark dataset loaders and their unified schema.
 
 ## Authors
 

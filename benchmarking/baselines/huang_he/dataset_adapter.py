@@ -9,15 +9,15 @@ We materialise the same schema under ``data/huang_he/<dataset>/input.jsonl``,
 adding a ``doc_id`` field so the result parser can join LLM-produced label
 names back to our canonical Document records.
 
-Text policy: per SPEC §5.1.1, all LLM-input document bodies are truncated to
+Text policy: all LLM-input document bodies are truncated to
 512 tokens (tiktoken ``cl100k_base``). The cap is applied here so every
 downstream phase --- generation, merge, classification --- sees identical
 text.
 
 Label policy: out-of-scope ("none") documents are **passed through**, not
 filtered. The method has no native unassigned path; classification will
-force-assign them to some in-list label, which is the penalty SPEC §5.5
-anticipates for non-"none"-aware baselines. We do **not** leak the
+force-assign them to some in-list label, which is the penalty the paper describes
+for non-"none"-aware baselines. We do **not** leak the
 ``__none__`` gold name into the ``label`` column for is_none rows --- we
 emit an empty string instead, since the upstream pipeline only reads
 ``label`` from the corpus during 20%-seeded label generation

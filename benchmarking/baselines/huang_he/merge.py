@@ -1,7 +1,7 @@
 """Phase 2: merge duplicate / near-duplicate labels via Opus 4.7.
 
 Single LLM call per dataset (seven calls per full sweep --- well under
-the SPEC §5.6 >1,000-text threshold, so it routes to the frontier tier
+the >1,000-text threshold, so it routes to the frontier tier
 via the Claude Code Max subscription rather than the OpenAI Batch API).
 
 Same prompt template as upstream (``prompt_construct_merge_label``,
@@ -179,8 +179,7 @@ def merge(dataset_name: str, *, overwrite: bool = False) -> MergeResult:
         # The Max subscription is billed as a flat monthly cost, not metered
         # tokens. We don't have per-call token counts from `claude -p` and
         # don't try to estimate them; subscription_usd accounting lives in
-        # result_parser.write (split flat across the 7 datasets per
-        # SPEC §5.6.3).
+        # result_parser.write (split flat across the 7 datasets).
         "input_tokens": 0,
         "output_tokens": 0,
         "cache_read_input_tokens": 0,

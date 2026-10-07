@@ -1,8 +1,7 @@
 """20 Newsgroups — long-doc topic classification, 20 classes.
 
 Uses sklearn's `fetch_20newsgroups` with `subset='all'` and
-`remove=('headers','footers','quotes')` — the BERTopic preprocessing recipe, which
-matches SPEC §5.1's stripping requirement. Rows with empty text after stripping are dropped.
+`remove=('headers','footers','quotes')` — the BERTopic preprocessing recipe. Rows with empty text after stripping are dropped.
 """
 
 from __future__ import annotations

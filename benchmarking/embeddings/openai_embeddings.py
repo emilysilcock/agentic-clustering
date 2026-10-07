@@ -9,7 +9,7 @@ Cache layout (same shape as the SBERT cache):
     data/embeddings/<model_shortname>/<dataset>.meta.json      # provenance + sha256 + actual token usage and USD
 
 All bulk embedding calls go through the OpenAI Batch API (50% discount, ≤24h
-SLA) per SPEC §5.6.3. We persist actual tokens and USD into the sidecar so
+SLA). We persist actual tokens and USD into the sidecar so
 cache-hit runs report the real amount paid, not a re-estimate.
 
 Two public entry points:

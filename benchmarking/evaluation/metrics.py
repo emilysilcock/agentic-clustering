@@ -1,14 +1,14 @@
 """Partition-quality metrics for clustering: ARI, NMI, ACC (Hungarian).
 
 All three are computed on the full document set, including "none" gold docs
-(gold_label_id == -1). Per SPEC §5.5, methods without native "none" support
+(gold_label_id == -1). Methods without native "none" support
 will see their rejected-equivalent docs distributed across the k in-scope
 clusters and be penalised here accordingly.
 
 ARI / NMI are partition metrics and treat "none" as just another gold class.
 ACC uses scipy's Hungarian solver on a rectangular contingency matrix
 (predicted clusters × gold classes), which handles the k vs k+1 case
-natively — see SPEC §5.5.
+natively.
 """
 
 from __future__ import annotations

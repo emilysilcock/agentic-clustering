@@ -1,4 +1,4 @@
-"""Phase 4: parse Huang & He outputs into the SPEC §5.11 prediction layout.
+"""Phase 4: parse Huang & He outputs into the benchmark prediction layout.
 
 Reads ``classifications.jsonl`` + ``labels_merged.json``, maps LLM-produced
 label names to contiguous cluster ids (in the order they appear in the
@@ -17,7 +17,7 @@ Both are force-assigned to the **largest predicted cluster** here, same
 policy as ``topicgpt/result_parser.py``. The method has no native
 unassigned path; ``is_none`` documents go through the same force-assign
 path and end up wherever the LLM puts them, naturally penalising
-Huang & He for not having a native "none" output (the SPEC §5.5.3 hit).
+Huang & He for not having a native "none" output.
 
 ## Cost
 
@@ -25,7 +25,7 @@ Huang & He for not having a native "none" output (the SPEC §5.5.3 hit).
   (``usage_generate.json``, ``usage_classify.json``) hold the token totals.
 * Phase 2 (Opus 4.7 via Claude Code Max subscription) is not metered;
   reported as ``subscription_usd = $100/7 = $14.29`` per dataset
-  (symmetric with ``agentic_clustering`` per SPEC §5.6.3).
+  (symmetric with ``agentic_clustering``).
 * ``api_usd`` is the dollar cost of phases 1+3 priced against the
   ``gpt-5-mini`` Batch API rates pinned by the harness (see
   ``GPT5_MINI_*`` constants).
@@ -56,7 +56,7 @@ FRONTIER_MODEL = "claude-opus-4-7"
 BULK_MODEL = "gpt-5-mini"
 
 # Flat split of the $100/mo Claude Code Max subscription across the 7
-# datasets in the sweep (symmetric with agentic_clustering per SPEC §5.6.3).
+# datasets in the sweep (symmetric with agentic_clustering).
 SUBSCRIPTION_USD_PER_DATASET = 100.0 / 7
 
 # OpenAI gpt-5-mini Batch API pricing (50% off sync rates) — same numbers

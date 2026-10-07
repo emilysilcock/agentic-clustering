@@ -35,7 +35,7 @@ because:
 - Upstream's `evaluate.py` silently drops `"Unsuccessful"` rows from the
   denominator, inflating metrics.
 - Upstream uses sync `chat.completions` with no batching; we route to the
-  OpenAI Batch API (50% discount) per SPEC §5.6 and use Opus 4.7 via Claude
+  OpenAI Batch API (50% discount) and use Opus 4.7 via Claude
   Code Max subscription for the single per-dataset merge call.
 
 See `../CHANGES.md` for the full list of harness-side substitutions.

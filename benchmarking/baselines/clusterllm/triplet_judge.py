@@ -6,10 +6,9 @@ Two judging paths live here:
    for the 1810 already-judged records archived as ``triplets_judged.opus.jsonl``;
    not used for new runs.
 2. ``judge_triplets_openai_batch`` (current) — ``gpt-5-mini`` via OpenAI Batch
-   API. Per SPEC §5.6.3 (updated 2026-05-23), any phase running an LLM over
-   >1,000 texts is on the cheap tier; ClusterLLM's 1,024-triplet-per-dataset
-   shape is just over the threshold and routes here. See the SPEC's "ClusterLLM"
-   row in §5.6.2.
+   API. Any phase running an LLM over >1,000 texts is on the cheap tier;
+   ClusterLLM's 1,024-triplet-per-dataset shape is just over the threshold
+   and routes here.
 
 The prompt assembly and post-processing mirror ``tools.py:prepare_data`` /
 ``post_process`` from the vendored upstream exactly so judgments stay
@@ -203,7 +202,7 @@ def judge_triplets(
 
 
 # ---------------------------------------------------------------------------
-# gpt-5-mini Batch-API path (current default per SPEC §5.6.3)
+# gpt-5-mini Batch-API path (current default)
 # ---------------------------------------------------------------------------
 
 # Pricing on the OpenAI Batch API (50% off sync). Pinned as paper artefact.
@@ -221,8 +220,7 @@ def _get_openai_client():
 def _stream_download_file(client, file_id: str, dest: Path, *, max_attempts: int = 6) -> None:
     """Stream an OpenAI file to disk, retrying on Cloudflare 504s.
 
-    Cribbed from scripts/recover_orphan_batches.py — the embedding output
-    bug taught us that ``client.files.content(...).text`` blocks the whole
+    An earlier embedding-output bug taught us that ``client.files.content(...).text`` blocks the whole
     body and 504s on large files, even though batch judgment outputs here
     are small. Cheap to keep streaming for robustness.
     """
@@ -305,10 +303,10 @@ def judge_triplets_openai_batch(
             # gpt-5-mini is a reasoning model: ``max_completion_tokens`` counts
             # hidden reasoning + visible tokens. Budget 2048 so the API-default
             # ``reasoning_effort="medium"`` has room to think before emitting
-            # the "Choice 1"/"Choice 2" line. Per SPEC convention we leave
-            # ``reasoning_effort`` unset so it matches the default used by every
-            # other gpt-5-mini call site in the paper (TopicGPT, Huang & He,
-            # our method's classify.py); flagging any deviation in the paper.
+            # the "Choice 1"/"Choice 2" line. We leave ``reasoning_effort``
+            # unset so it matches the default used by every other gpt-5-mini
+            # call site in the paper (TopicGPT, Huang & He, our method's
+            # classify.py).
             req = {
                 "custom_id": cid,
                 "method": "POST",
@@ -438,7 +436,7 @@ def main() -> None:
         "--judge",
         choices=("openai_batch", "claude"),
         default="openai_batch",
-        help="Which judging backend to use. Default per SPEC §5.6.3.",
+        help="Which judging backend to use.",
     )
     parser.add_argument("--model", default=None,
                         help="Model id; defaults depend on --judge.")

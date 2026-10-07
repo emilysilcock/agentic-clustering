@@ -62,7 +62,7 @@ MODEL = "gpt-5-mini"
 SYSTEM_MESSAGE = "You are a helpful assistant."
 
 # gpt-5-mini reasoning + output share this budget. Bumped from 2000 to 4000
-# (2026-05-25) after the 20NG correction batch had 2,806 / 12,768 rows
+# after the 20NG correction batch had 2,806 / 12,768 rows
 # (22%) hit the 400 error "max_tokens or model output limit was reached" on
 # long-doc reprompts where the reasoning tokens alone exceeded 2000.
 CORRECT_MAX_COMPLETION_TOKENS = 4000

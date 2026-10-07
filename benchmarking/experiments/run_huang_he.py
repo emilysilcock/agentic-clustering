@@ -8,11 +8,12 @@ Drives all phases via ``benchmarking.baselines.huang_he``:
   Phase 3 ``classify`` --- gpt-5-mini (OpenAI Batch) -> classifications.jsonl
   Phase 4 ``write``    --- parse + score -> results/predictions/huang_he/<ds>/seed=0.{jsonl,meta.json}
 
-Discover-$k$ only (SPEC §5.5) --- no ``--k`` flag; Huang & He decides $k$
+Discover-$k$ only --- no ``--k`` flag; Huang & He decides $k$
 itself via the merge step. The method appears only in the discover-$k$
 panel of the results table, symmetric with TopicGPT.
 
-Routing per SPEC §5.6.2 and the §5.6 >1,000-text rule:
+Routing per the >1,000-text rule (a phase that runs the LLM over more than
+1,000 texts goes to the cheap tier; otherwise frontier):
 
 * Phase 1: ~6k chunked-15 calls across the sweep -> cheap (gpt-5-mini Batch).
 * Phase 2: 7 calls total (one per dataset) -> frontier (Opus 4.7 via subscription).

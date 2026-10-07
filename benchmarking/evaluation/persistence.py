@@ -1,6 +1,6 @@
 """Persist a single run to results/predictions/<method>/<dataset>/seed=<n>.{jsonl,meta.json}.
 
-SPEC §5.11 defines this layout. Every runner in benchmarking/experiments/ calls
+Every runner in benchmarking/experiments/ calls
 write_run_artifacts() exactly once per (method, dataset, seed) cell. Metric
 computation reads from these files, so re-scoring with a new metric requires
 no model calls.

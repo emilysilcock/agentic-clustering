@@ -1,6 +1,6 @@
 """BERTopic runner — Cat 2 baseline over all 7 processed datasets.
 
-Runs *both* given-k (for the main table) and discover-k (for the SPEC §5.5
+Runs *both* given-k (for the main table) and discover-k (for the
 secondary table) per dataset, writing to two separate artifact paths:
     results/predictions/bertopic/<dataset>/seed=0.{jsonl,meta.json}            # given-k
     results/predictions/bertopic_discoverk/<dataset>/seed=0.{jsonl,meta.json}  # discover-k

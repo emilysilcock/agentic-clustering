@@ -9,8 +9,8 @@
 | 3     | checkpoints/instructor-large/...    | vendored finetune.py (GPU)            |
 | 4     | final_embeds.hdf5 + results/        | ``embed_base`` (with finetuned ckpt)  |
 
-Tonight's overnight call site is phase 2 only. Phases 0+1 prepare its input;
-phases 3+4 are tomorrow on FASRC GPU.
+The LLM call site is phase 2 only. Phases 0+1 prepare its input; phases 3+4
+need a GPU.
 
 Encoder note (phase 0/4): we use ``SentenceTransformer("hkunlp/instructor-large")``
 with the modern ``prompt=`` argument rather than subprocessing into the
@@ -19,7 +19,7 @@ transformers 2.2 internals and breaks against current ST 5.x; rather than
 patch the science-adjacent code we drive the same model weights through
 the ST 5.x prompt API, with the per-dataset Instructor instructions from
 ``instructor_prompts.json`` (copied verbatim from the authors' phase-3
-prompts.json). Documented in SPEC §5.6.3.
+prompts.json).
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ def judge(
     """Phase 2: judge each triplet via the cheap-tier LLM.
 
     Default ``backend="openai_batch"`` routes through ``gpt-5-mini`` on the
-    OpenAI Batch API, per SPEC §5.6.3 (>1,000-text rule). ``backend="claude"``
+    OpenAI Batch API (LLM phases over >1,000 texts use the cheap tier). ``backend="claude"``
     is the legacy Opus path, kept for the archived ``triplets_judged.opus.jsonl``
     records and not used for new runs.
 

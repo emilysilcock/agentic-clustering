@@ -25,8 +25,8 @@ def load() -> ProcessedDataset:
     label_col = _pick_label_column(test_ds.column_names)
 
     # The full intent label space has 60 classes (per MASSIVE paper). EN test only
-    # contains 59 of them — 'cooking_query' is absent. To keep k=60 (matching SPEC and
-    # prior clustering papers), derive the canonical label set from train+val+test
+    # contains 59 of them — 'cooking_query' is absent. To keep k=60 (matching prior
+    # clustering papers), derive the canonical label set from train+val+test
     # and emit only test rows.
     label_names: list[str] = sorted(
         {

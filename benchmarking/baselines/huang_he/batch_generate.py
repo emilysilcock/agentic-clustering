@@ -12,7 +12,7 @@ upstream — including the ``"classicifation"`` typo); different dispatch.
 3. Chunk into batches of B=15 documents (upstream default).
 4. Build one prompt per chunk via the vendored
    ``prompt_construct_generate_label`` with ``given_labels=[]`` (the
-   0%-seed configuration --- SPEC §5.6.2).
+   0%-seed configuration).
 5. Submit all chunks to OpenAI Batch as a single submission group;
    ``response_format={"type":"json_object"}`` so output is valid JSON.
 6. Parse each response with ``json.loads``; extract the first list-valued
@@ -31,7 +31,7 @@ hit between chunks. The prompt prefix (``"Given the labels, under a text
 classicifation scenario, ... Labels: []"``) is short anyway. We record
 ``cached_tokens`` for completeness; expect near-zero cache hit rate.
 
-Phase 1 is the cheap-tier route per SPEC §5.6.2 (>1,000-text rule does
+Phase 1 is the cheap-tier route (>1,000-text rule does
 not apply --- 6k total calls is per-sweep, but each request is one of
 6,308 across the 7 datasets; routed to ``gpt-5-mini`` for cost not
 volume). See ``CHANGES.md``.

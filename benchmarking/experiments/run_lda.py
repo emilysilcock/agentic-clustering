@@ -1,6 +1,6 @@
 """LDA runner — Cat 1 baseline over all 7 processed datasets.
 
-Deterministic; single seed (default 0) per SPEC §5.7.
+Deterministic; single seed (default 0).
 
 Usage:
     uv run --native-tls python -m benchmarking.experiments.run_lda

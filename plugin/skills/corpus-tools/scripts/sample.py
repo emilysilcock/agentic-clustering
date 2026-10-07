@@ -274,9 +274,8 @@ RETENTION_MARGIN = 2
 # (MIN_AUDIT_N_PER_CLUSTER) and therefore CLAMPS this margin for any cluster
 # starting from nothing: a cluster at n=0 has a shortfall equal to the floor,
 # so min(ceiling, 2 x shortfall) collapses to the bare shortfall and the margin
-# does nothing for exactly the clusters furthest behind. That looks like a bug.
-# It was "fixed" on 2026-09-21 by raising the default ceiling, and the fix was
-# reverted the same day after measurement.
+# does nothing for exactly the clusters furthest behind. That looks like a bug,
+# but raising the default ceiling measures worse.
 #
 # Swept on both synthetic corpora, every cluster starting at n=0, six draw
 # seeds per cell, 60 cells total (mean passes / mean texts to clear the floor):

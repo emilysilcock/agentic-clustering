@@ -1,18 +1,18 @@
-"""BERTopic baseline (SPEC §5.2, Cat 2).
+"""BERTopic baseline (Cat 2).
 
 Pure function: takes pre-computed SBERT embeddings (same cache as SBERT+kmeans) and
 returns cluster assignments + intrinsic per-cluster top words from c-TF-IDF.
 
-Two call modes per the SPEC §5.5 k-handling rule:
+Two call modes:
 - given-k:     `nr_topics=k_in_scope` (BERTopic post-hoc-merges discovered topics)
 - discover-k:  `nr_topics=None`       (HDBSCAN's natural discovery is kept)
 
 We deliberately do NOT call `reduce_outliers()` — HDBSCAN's noise label (-1) is
 BERTopic's native "none" output, which aligns with our gold -1 / __none__ class
-on CLINC OOS and GoEmotions neutral (SPEC §5.3 advantage).
+on CLINC OOS and GoEmotions neutral.
 
 Deterministic given the seed (via UMAP's random_state); HDBSCAN is deterministic
-given the same inputs. Single seed per SPEC §5.7.
+given the same inputs. Single seed.
 """
 
 from __future__ import annotations

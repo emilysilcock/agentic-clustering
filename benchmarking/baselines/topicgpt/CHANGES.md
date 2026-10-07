@@ -17,10 +17,11 @@ Only the subset of `topicgpt_python/` we actually drive from
   low-frequency ones)
 - `topicgpt_python/assignment.py` — sync per-doc assignment (vendored for
   completeness; the actual Phase 3 driver is our `batch_assigner.py`, which
-  goes through the Anthropic Batch API for the per-doc cost reduction
-  required by SPEC §5.6.2)
-- `topicgpt_python/correction.py` — Phase 4 (reassign hallucinated topic
-  names; small N, sync calls)
+  goes through the OpenAI Batch API with gpt-5-mini for the per-doc cost
+  reduction)
+- `topicgpt_python/correction.py` — Phase 4 identification logic (reassign
+  hallucinated topic names); the reprompts themselves go through our
+  `batch_correct.py` on the OpenAI Batch API
 - `topicgpt_python/data_sample.py`
 
 Plus the prompt templates, copied verbatim into
@@ -34,7 +35,7 @@ Plus the prompt templates, copied verbatim into
 **Not vendored** (explicitly omitted):
 
 - `topicgpt_python/generation_2.py` — second-level hierarchical topic
-  generation. SPEC §5.5 / §5.1.1 fix depth=1 (flat taxonomies), so this
+  generation. The benchmark fixes depth=1 (flat taxonomies), so this
   branch is dead code for us.
 - `topicgpt_python/metrics.py` — upstream's metrics module. We use
   `benchmarking/evaluation/metrics.py` (ARI / NMI / ACC with Hungarian
@@ -87,27 +88,24 @@ Three additive edits, all marked in the file with comments beginning
    (no-op; the subprocess wrapper is stateless) and to
    `iterative_prompt` that dispatches to
    `benchmarking.llm_clients.claude_code.call_claude(...)`. Used for
-   Phase 1 (`generate_topic_lvl1`) and Phase 2 (`refine_topics`), per
-   SPEC §5.6.2 — Opus 4.7 via the Claude Code Max subscription, not
-   metered.
+   Phase 1 (`generate_topic_lvl1`) and Phase 2 (`refine_topics`) — Opus
+   4.7 via the Claude Code Max subscription, not metered.
 
 3. **New `anthropic` provider.** Added a branch to `APIClient.__init__`
    (constructs an `anthropic.Anthropic()` client from
    `ANTHROPIC_API_KEY`) and to `iterative_prompt` that uses the metered
-   sync Messages API. Used for Phase 4 (`correct_topics`) only — Haiku
-   4.5 on the small number of `error` / `hallucinated` rows. **Per-doc
-   assignment (Phase 3) does NOT route through this branch**; it goes
-   through `benchmarking/baselines/topicgpt/batch_assigner.py`, which
-   submits to the Anthropic Batch API with prompt caching to halve the
-   per-token cost (SPEC §5.6.2, §5.6.3 — "Batch API used for all bulk
-   LLM/embedding operations").
+   sync Messages API. The benchmark run does not use it: per-doc
+   assignment (Phase 3) and correction (Phase 4) go through
+   `batch_assigner.py` and `batch_correct.py`, which submit gpt-5-mini
+   requests to the OpenAI Batch API (Batch API is used for all bulk
+   LLM/embedding operations).
 
 4. **Per-call usage tracking.** Added `self.usage` dict (input_tokens,
    output_tokens, cache_read_input_tokens, cache_creation_input_tokens,
    n_calls) to `APIClient.__init__`, populated inside the
    `claude_code`, `anthropic`, and `openai` branches of
-   `iterative_prompt`. Read by `orchestrate.py` to populate the SPEC
-   §5.11 meta.json `cost` field. For the `openai` branch we follow the
+   `iterative_prompt`. Read by `orchestrate.py` to populate the
+   meta.json `cost` field. For the `openai` branch we follow the
    convention from `skills/corpus-tools/scripts/classify.py`:
    `input_tokens = prompt_tokens - cached_tokens` so the field means
    the same thing across providers (non-cached billable portion).

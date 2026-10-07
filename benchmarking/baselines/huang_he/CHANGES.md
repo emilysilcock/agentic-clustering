@@ -24,7 +24,7 @@ executed.
 
 - Upstream: per-dataset random sample of `0.2 * |gold labels|` names
   (with replacement, no `random.seed`) → seed list.
-- Harness (SPEC §5.6.2 — 0%-seed configuration only): **empty seed list**.
+- Harness (0%-seed configuration only): **empty seed list**.
   We never invoke `select_part_labels.py`; the per-dataset seed list passed
   into `prompt_construct_generate_label` as `given_labels=[]`.
 
@@ -37,15 +37,14 @@ executed.
   the shuffle, parse via `json.loads`, drop on parse failure (no
   re-prompt). Temperature is **not passed** — gpt-5-mini rejects the
   parameter as a reasoning model; the harness uses the model's internal
-  fixed sampling strategy. Includes `is_none` documents end-to-end
-  (SPEC §5.5).
+  fixed sampling strategy. Includes `is_none` documents end-to-end.
 
 ### Label merging
 
 - Upstream: same sync `gpt-3.5-turbo-0125` call as Stage 1.
 - Harness: **single sync call to `claude-opus-4-7`** via the Claude Code
   Max subscription (`benchmarking.llm_clients.claude_code.call_claude`).
-  One call per dataset (= 7 calls per sweep) → frontier tier per SPEC §5.6.
+  One call per dataset (= 7 calls per sweep) → frontier tier (under the >1,000-text threshold).
 
 ### Classification (`given_label_classification.py`)
 
@@ -72,5 +71,4 @@ executed.
 
 Phases 1 + 3 are metered (OpenAI Batch). Phase 2 (~7 sync Opus calls per
 sweep) is reported as `subscription_usd = $14.29` per dataset
-(= $100/7), symmetric with `agentic_clustering` and `clusterllm` per
-SPEC §5.6.3.
+(= $100/7), symmetric with `agentic_clustering` and `clusterllm`.

@@ -87,7 +87,7 @@ def main() -> None:
         help=(
             "synth-only only: skip the classify call and assemble the artifact from "
             "the seed_0.csv already in the workspace (e.g. after repairing a "
-            "partially-failed classify with scripts/retry_classify_errors.py)."
+            "partially-failed classify CSV)."
         ),
     )
     parser.add_argument(
@@ -97,8 +97,8 @@ def main() -> None:
             "Reproduce the configuration the paper's run of this ablation used, "
             "rather than the shipped plugin's current defaults: pins the initial "
             "proposer count and restores the cumulative agent-dispatch cap "
-            "(no-task: 3 proposers / 8 dispatches, 2026-05-25; no-k: 3 / 20, "
-            "2026-07-12). The plugin itself is untouched either way. Ignored for "
+            "(no-task: 3 proposers / 8 dispatches; no-k: 3 / 20). "
+            "The plugin itself is untouched either way. Ignored for "
             "--synthonly, which runs no orchestrator."
         ),
     )
@@ -172,7 +172,7 @@ def main() -> None:
         # returns without finalizing, or a transient API/subprocess error) must
         # NOT abort the remaining datasets. Log it, record it, and continue; the
         # failed dataset simply has no prediction and can be re-run later with
-        # --only. Mirrors run_overlap_sweep's skip-and-continue behaviour.
+        # --only.
         try:
             if args.synthonly:
                 rows.append(run_synthonly(name, seed=args.seed, reuse_existing_classify=args.reuse_existing_classify))

@@ -25,11 +25,10 @@ dependencies = [
     # TopicGPT baseline (vendored under benchmarking/baselines/topicgpt/_vendored)
     "anytree>=2.12",
     "anthropic>=0.40",
-    # Torch pinned to a cu128 build. FASRC GPU nodes (driver 575.x) cap at
-    # CUDA 12.9, so the default cu13x wheels silently fall back to CPU.
-    # cu128 wheels also work on Windows/local with newer drivers (forward
-    # compat), so one resolution covers both platforms. See
-    # ~/.claude/skills/fasrc/gotchas.md "torch CUDA wheel vs FASRC driver".
+    # Torch pinned to a cu128 build. Many cluster GPU nodes run drivers that
+    # cap at CUDA 12.x, where the default cu13x wheels silently fall back to
+    # CPU. cu128 wheels also work with newer drivers (forward compat), so one
+    # resolution covers both clusters and local machines.
     "torch==2.11.0",
 ]
 
