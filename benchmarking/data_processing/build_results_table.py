@@ -17,7 +17,7 @@ Run after new predictions land:
 
     uv run --native-tls python -m benchmarking.data_processing.build_results_table
 
-Writes `results_table.tex` to `results/tables/` (or `--out-dir`).
+Writes `results_table.tex` to `paper/` (or `--out-dir`).
 """
 
 from __future__ import annotations

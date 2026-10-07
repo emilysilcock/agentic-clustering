@@ -18,7 +18,7 @@ Run after new ablation predictions land:
 
     uv run --native-tls python -m benchmarking.data_processing.build_ablation_table
 
-Writes ``ablation_table.tex`` to ``results/tables/`` (or ``--out-dir``).
+Writes ``ablation_table.tex`` to ``paper/`` (or ``--out-dir``).
 """
 
 from __future__ import annotations

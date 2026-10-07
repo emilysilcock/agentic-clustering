@@ -4,7 +4,7 @@ Run after `process_all`:
 
     uv run --native-tls python -m benchmarking.data_processing.build_summary_table
 
-Writes `dataset_table.tex` to `results/tables/` (or `--out-dir`). Per-dataset
+Writes `dataset_table.tex` to `paper/` (or `--out-dir`). Per-dataset
 metadata that doesn't live in meta.json (display label, type, prior-art
 source) is in `DISPLAY` below.
 """

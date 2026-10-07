@@ -13,7 +13,7 @@ baseline row is comparable with the sweep rows rather than computed a second way
 
     uv run --native-tls python -m benchmarking.data_processing.build_design_ablations_table
 
-Writes to `results/tables/` (or `--out-dir`).
+Writes to `paper/` (or `--out-dir`).
 """
 
 from __future__ import annotations
