@@ -12,7 +12,7 @@ makes CLINC150's spread interpretable rather than mysterious.
 
     uv run --native-tls python -m benchmarking.data_processing.build_seed_table
 
-Writes to ``paper/`` (or ``--out-dir``).
+Writes to ``results/tables/`` (or ``--out-dir``).
 """
 
 from __future__ import annotations

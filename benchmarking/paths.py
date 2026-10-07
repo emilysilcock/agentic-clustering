@@ -5,7 +5,7 @@ DATA = ROOT / "data"
 DATA_RAW = DATA / "raw"
 DATA_DERIVED = DATA / "derived"
 RESULTS = ROOT / "results"
-TABLES = ROOT / "paper"
+TABLES = RESULTS / "tables"
 
 
 def ensure_data_dirs() -> None:
@@ -22,7 +22,7 @@ def table_out_dir(description: str | None = None) -> Path:
         "--out-dir",
         type=Path,
         default=TABLES,
-        help="Where to write the .tex table (default: paper/).",
+        help="Where to write the .tex table (default: results/tables/).",
     )
     out_dir = p.parse_args().out_dir
     out_dir.mkdir(parents=True, exist_ok=True)

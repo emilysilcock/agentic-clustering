@@ -45,7 +45,7 @@ Per-method spend is reported in the paper's results table.
 uv sync
 uv run python -m benchmarking.data_processing.process_all     # download + preprocess the 7 datasets
 uv run python -m benchmarking.experiments.<runner>             # one per method, see below
-uv run python -m benchmarking.data_processing.<builder>        # writes tables to paper/
+uv run python -m benchmarking.data_processing.<builder>        # writes tables to results/tables/
 ```
 
 | Paper table | Runners (`benchmarking.experiments.*`) | Builder (`benchmarking.data_processing.*`) |
