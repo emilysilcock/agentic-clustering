@@ -1,4 +1,4 @@
-"""Build paper/seed_variance_table.tex from the multi-seed discover-k runs.
+"""Build seed_variance_table.tex from the multi-seed discover-k runs.
 
 Sibling of build_results_table.py / build_ablation_table.py. Unlike those, which
 report a single designated seed, this one reads every seed present for the
@@ -11,6 +11,8 @@ separates them by recomputing ARI over in-scope documents only, which is what
 makes CLINC150's spread interpretable rather than mysterious.
 
     uv run --native-tls python -m benchmarking.data_processing.build_seed_table
+
+Writes to ``results/tables/`` (or ``--out-dir``).
 """
 
 from __future__ import annotations
@@ -22,9 +24,10 @@ from pathlib import Path
 
 from sklearn.metrics import adjusted_rand_score
 
+from benchmarking.paths import table_out_dir
+
 REPO = Path(__file__).resolve().parents[2]
 PRED = REPO / "results" / "predictions" / "agentic_clustering_discoverk"
-OUT = REPO / "paper" / "seed_variance_table.tex"
 
 # Display order and labels match results_table.tex / ablation_table.tex.
 DATASETS = [
@@ -67,6 +70,7 @@ def fmt(vals: list[float]) -> str:
 
 
 def main() -> int:
+    out_path = table_out_dir(__doc__) / "seed_variance_table.tex"
     rows, n_seeds = [], set()
     for ds, label in DATASETS:
         seeds = seeds_for(ds)
@@ -106,8 +110,8 @@ def main() -> int:
   \\label{{tab:seed-variance}}
 \\end{{table*}}
 """
-    OUT.write_text(tex, encoding="utf-8")
-    print(f"wrote {OUT.relative_to(REPO)} ({len(rows)} datasets, {n} seeds)")
+    out_path.write_text(tex, encoding="utf-8")
+    print(f"wrote {out_path} ({len(rows)} datasets, {n} seeds)")
     print(tex)
     return 0
 

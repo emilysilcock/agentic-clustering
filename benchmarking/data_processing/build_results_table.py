@@ -17,7 +17,7 @@ Run after new predictions land:
 
     uv run --native-tls python -m benchmarking.data_processing.build_results_table
 
-Writes to `paper/results_table.tex`.
+Writes `results_table.tex` to `results/tables/` (or `--out-dir`).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 
-from benchmarking.paths import DATA, DATA_DERIVED, RESULTS, ROOT
+from benchmarking.paths import DATA, DATA_DERIVED, RESULTS, table_out_dir
 
 
 @dataclass(frozen=True)
@@ -720,7 +720,7 @@ def build_table() -> str:
 
 
 def main() -> None:
-    out_path = ROOT / "paper" / "results_table.tex"
+    out_path = table_out_dir(__doc__) / "results_table.tex"
     out_path.write_text(build_table(), encoding="utf-8")
     print(f"Wrote {out_path}")
 

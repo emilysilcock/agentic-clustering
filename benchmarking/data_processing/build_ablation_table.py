@@ -18,7 +18,7 @@ Run after new ablation predictions land:
 
     uv run --native-tls python -m benchmarking.data_processing.build_ablation_table
 
-Writes to ``paper/ablation_table.tex``.
+Writes ``ablation_table.tex`` to ``results/tables/`` (or ``--out-dir``).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from benchmarking.data_processing.build_results_table import (
     _fmt,
     load_metrics,
 )
-from benchmarking.paths import ROOT
+from benchmarking.paths import table_out_dir
 
 # Row order within each method group is fixed; column-group order left to right.
 ABLATION_METHODS: list[MethodDisplay] = [
@@ -100,7 +100,7 @@ def build_table() -> str:
 
 
 def main() -> None:
-    out_path = ROOT / "paper" / "ablation_table.tex"
+    out_path = table_out_dir(__doc__) / "ablation_table.tex"
     out_path.write_text(build_table(), encoding="utf-8")
     print(f"Wrote {out_path}")
 

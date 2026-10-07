@@ -27,23 +27,38 @@ data/                benchmark data (gitignored — downloaded from HuggingFace)
 results/             figures, tables, logs, predictions (gitignored)
 ```
 
-## Paper experiments
+## Reproducing the paper
+
+### Requirements
+
+- [uv](https://docs.astral.sh/uv/) and Python 3.11 (`uv sync` installs everything else).
+- An OpenAI API key (`OPENAI_API_KEY`) for the cheap-tier calls (gpt-5-mini via the Batch API) and the `text-embedding-3-large` baseline. Set it in the environment or in a `secrets.json` at the repo root (`{"OPENAI_API_KEY": "..."}`, gitignored).
+- [Claude Code](https://claude.com/claude-code), logged in to a Claude subscription, for the frontier-tier calls (our method's agent loop, TopicGPT's generation and refinement, Huang & He's label merging). These run through `claude -p`.
+- The [text-classification](https://github.com/emilysilcock/text-classification) plugin cloned next to this repo (`../text-classification/`); our method's final classification step loads it.
+- A CUDA GPU for ClusterLLM's fine-tuning and clustering phases only (we used a single A100: roughly 15–25 minutes per dataset to fine-tune, 5–15 to cluster).
+
+Per-method spend is reported in the paper's results table.
+
+### Steps
 
 ```bash
 uv sync
-uv run python -m benchmarking.experiments.<name>
+uv run python -m benchmarking.data_processing.process_all     # download + preprocess the 7 datasets
+uv run python -m benchmarking.experiments.<runner>             # one per method, see below
+uv run python -m benchmarking.data_processing.<builder>        # writes tables to results/tables/
 ```
 
-Data-processing entry points should call `ensure_data_dirs()` from `benchmarking.paths` so `data/raw/` and `data/derived/` exist on a fresh clone:
+| Paper table | Runners (`benchmarking.experiments.*`) | Builder (`benchmarking.data_processing.*`) |
+|---|---|---|
+| Datasets | — | `build_summary_table` |
+| Main results | `run_lda`, `run_sbert_kmeans`, `run_bertopic`, `run_openai_embedding_kmeans`, `run_clusterllm --phase all`, `run_topicgpt`, `run_huang_he`, `run_agentic_clustering --all` (given k) and `--all --discover-k`, `run_ablations --nok --all` (no k) | `build_results_table` |
+| Seed variance | `run_agentic_clustering --all --discover-k --seed {1,2}` | `build_seed_table` |
+| Ablations | `run_ablations --synthonly --all`, `run_ablations --notask --all` | `build_ablation_table` |
+| Design ablations | `run_proposer_sweep --variant all --all`, `run_sample_size_sweep --variant all --all` | `compare_proposer_sweep`, `compare_sample_size_sweep` (the table is assembled from their summaries in `results/`) |
 
-```python
-from benchmarking.paths import ensure_data_dirs, DATA_RAW
-ensure_data_dirs()
-```
+Each runner's `--help` lists its options; `--only <dataset>` restricts a run to some datasets. Every step caches its outputs under `data/` and `results/`, so runs can be split up or resumed. `--paper-config` on `run_agentic_clustering` and `run_ablations` reproduces the exact configuration of the paper's runs.
 
-The ClusterLLM baseline is the only step that needs a GPU: its fine-tuning and clustering phases need CUDA (we used a single A100, roughly 15–25 minutes per dataset to fine-tune and 5–15 to cluster). `run_clusterllm --phase all` runs the whole pipeline; phases cache their output, and `--only <dataset>` lets datasets run in parallel on separate machines.
-
-An internal README, [`benchmarking/data_processing/README.md`](benchmarking/data_processing/README.md), covers the seven benchmark dataset loaders and their unified schema.
+[`benchmarking/data_processing/README.md`](benchmarking/data_processing/README.md) covers the seven dataset loaders and their unified schema.
 
 ## Authors
 
